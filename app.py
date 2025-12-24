@@ -18,8 +18,6 @@ CSV_FILES = {
 import os
 import duckdb
 import google.generativeai as genai
-import os
-
 
 # --------------------------------------------------
 # PAGE CONFIG
@@ -28,6 +26,14 @@ st.set_page_config(
     page_title="Marketing Insights Dashboard",
     layout="wide"
 )
+
+# --------------------------------------------------
+# INITIALIZE SESSION STATE FOR API KEY
+# --------------------------------------------------
+if 'gemini_api_key' not in st.session_state:
+    st.session_state.gemini_api_key = None
+if 'api_key_configured' not in st.session_state:
+    st.session_state.api_key_configured = False
 
 # --------------------------------------------------
 # TRUE 3D KPI CARD STYLING
@@ -135,6 +141,24 @@ section[data-testid="stHorizontalBlock"] {
     color: #e2e8f0;
 }
 
+/* API Key Config Box */
+.api-config-box {
+    background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%);
+    border-radius: 16px;
+    padding: 24px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+    margin-bottom: 24px;
+}
+
+.success-box {
+    background: linear-gradient(160deg, #064e3b 0%, #022c22 100%);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 12px;
+    padding: 16px;
+    color: #6ee7b7;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -178,6 +202,22 @@ def top_value_metrics(series: pd.Series):
     return top_val, top_share, low_val, total
 
 # --------------------------------------------------
+# API KEY VALIDATION
+# --------------------------------------------------
+def validate_api_key(api_key: str) -> bool:
+    """Validate Gemini API key by attempting to configure it"""
+    if not api_key or len(api_key.strip()) == 0:
+        return False
+    try:
+        genai.configure(api_key=api_key.strip())
+        # Try to list models as a validation check
+        list(genai.list_models())
+        return True
+    except Exception as e:
+        st.error(f"Invalid API key: {str(e)}")
+        return False
+
+# --------------------------------------------------
 # TABS
 # --------------------------------------------------
 tab1, tab2 = st.tabs(["📈 Dashboard", "🤖 Chatbot"])
@@ -190,10 +230,7 @@ with tab1:
     # SIDEBAR
     # --------------------------------------------------
     st.sidebar.title("📂 Insights By Field")
-    GEMINI_API_KEY = st.text_input(
-    "Enter Gemini API Key",
-    type="password")
-
+    
     selected_dataset = st.sidebar.radio(
         "Select a field",
         list(CSV_FILES.keys())
@@ -249,7 +286,7 @@ with tab1:
         )
 
 # --------------------------------------------------
-# TAB 2: CHATBOT
+# TAB 2: CHATBOT WITH API KEY CONFIGURATION
 # --------------------------------------------------
 with tab2:
     st.markdown("## 🤖 Sales & Market Intelligence Bot")
@@ -257,20 +294,98 @@ with tab2:
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Load all data for chatbot
-    all_data = load_all_data()
+    # --------------------------------------------------
+    # API KEY CONFIGURATION SECTION
+    # --------------------------------------------------
+    st.markdown('<div class="api-config-box">', unsafe_allow_html=True)
+    st.markdown("### 🔑 API Configuration")
     
-    # Initialize DuckDB connection for data querying
-    con = duckdb.connect(database=':memory:')
+    # Check for environment variable first
+    env_api_key = os.getenv('GEMINI_API_KEY')
     
-    # Register all dataframes in DuckDB
-    for name, df in all_data.items():
-        # Create SQL-safe table name
-        table_name = name.lower().replace(" ", "_").replace("-", "_")
-        con.register(table_name, df)
+    if st.session_state.api_key_configured:
+        st.markdown('<div class="success-box">✅ API Key configured successfully!</div>', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            if st.button("🔄 Change API Key", use_container_width=True):
+                st.session_state.api_key_configured = False
+                st.session_state.gemini_api_key = None
+                st.rerun()
+    else:
+        st.markdown("**Choose an option to configure your Gemini API key:**")
+        
+        config_method = st.radio(
+            "Configuration Method",
+            ["Enter API Key Manually", "Upload API Key File", "Use Environment Variable"],
+            label_visibility="collapsed"
+        )
+        
+        api_key_to_validate = None
+        
+        if config_method == "Enter API Key Manually":
+            api_key_input = st.text_input(
+                "Enter your Gemini API Key",
+                type="password",
+                placeholder="AIza...",
+                help="Get your API key from https://makersuite.google.com/app/apikey"
+            )
+            if st.button("✅ Configure API Key", type="primary"):
+                if validate_api_key(api_key_input):
+                    st.session_state.gemini_api_key = api_key_input.strip()
+                    st.session_state.api_key_configured = True
+                    st.success("API Key configured successfully!")
+                    st.rerun()
+                    
+        elif config_method == "Upload API Key File":
+            st.info("Upload a .txt file containing your Gemini API key")
+            uploaded_file = st.file_uploader(
+                "Choose a file",
+                type=['txt'],
+                help="The file should contain only your API key"
+            )
+            if uploaded_file is not None:
+                api_key_from_file = uploaded_file.read().decode('utf-8').strip()
+                if st.button("✅ Configure from File", type="primary"):
+                    if validate_api_key(api_key_from_file):
+                        st.session_state.gemini_api_key = api_key_from_file
+                        st.session_state.api_key_configured = True
+                        st.success("API Key configured successfully!")
+                        st.rerun()
+                        
+        elif config_method == "Use Environment Variable":
+            if env_api_key:
+                st.info(f"Environment variable GEMINI_API_KEY found")
+                if st.button("✅ Use Environment Variable", type="primary"):
+                    if validate_api_key(env_api_key):
+                        st.session_state.gemini_api_key = env_api_key
+                        st.session_state.api_key_configured = True
+                        st.success("API Key configured successfully!")
+                        st.rerun()
+            else:
+                st.warning("⚠️ GEMINI_API_KEY environment variable not found")
+                st.info("Set the environment variable or choose another method")
     
-    # System prompt (verbatim as required)
-    SYSTEM_PROMPT = """You are the Indira IVF Sales & Market Intelligence Bot—a world-class strategy oracle.
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # --------------------------------------------------
+    # CHATBOT FUNCTIONALITY (only if API key is configured)
+    # --------------------------------------------------
+    if st.session_state.api_key_configured:
+        # Load all data for chatbot
+        all_data = load_all_data()
+        
+        # Initialize DuckDB connection for data querying
+        con = duckdb.connect(database=':memory:')
+        
+        # Register all dataframes in DuckDB
+        for name, df in all_data.items():
+            # Create SQL-safe table name
+            table_name = name.lower().replace(" ", "_").replace("-", "_")
+            con.register(table_name, df)
+        
+        # System prompt
+        SYSTEM_PROMPT = """You are the Indira IVF Sales & Market Intelligence Bot—a world-class strategy oracle.
 
 Your mission: Integrate internal performance data with external market intelligence to drive strategic growth.
 
@@ -297,27 +412,27 @@ RESPONSE FORMAT (STRICT):
 4. ECONOMIC & REGULATORY FACTORS
 5. STRATEGIC RECOMMENDATIONS
 """
-    
-    # User input
-    user_query = st.text_area(
-        "Your Question",
-        placeholder="Example: What is our conversion rate by region? Which competitors are gaining market share?",
-        height=120,
-        label_visibility="visible"
-    )
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    analyze_btn = st.button("🔍 Analyze", type="primary", use_container_width=True)
-    
-    # Process query
-    if analyze_btn and user_query:
-        if not GEMINI_API_KEY:
-            st.error("⚠️ GEMINI_API_KEY not found")
-        else:
+        
+        # User input
+        user_query = st.text_area(
+            "Your Question",
+            placeholder="Example: What is our conversion rate by region? Which competitors are gaining market share?",
+            height=120,
+            label_visibility="visible"
+        )
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        analyze_btn = st.button("🔍 Analyze", type="primary", use_container_width=True)
+        
+        # Process query
+        if analyze_btn and user_query:
             with st.spinner("🧠 Analyzing data..."):
                 try:
-                    # Prepare data context - extract actual data summaries
+                    # Configure Gemini with stored API key
+                    genai.configure(api_key=st.session_state.gemini_api_key)
+                    
+                    # Prepare data context
                     data_context = ""
                     
                     for name, df in all_data.items():
@@ -329,7 +444,7 @@ RESPONSE FORMAT (STRICT):
                         data_context += f"Total records: {len(df)}\n"
                         data_context += f"Columns: {', '.join(df.columns.tolist())}\n"
                         
-                        # Add sample data (first 50 rows to keep context manageable)
+                        # Add sample data (first 50 rows)
                         data_context += f"\nSample data (first 50 rows):\n"
                         data_context += df.head(50).to_markdown(index=False)
                         data_context += "\n"
@@ -341,16 +456,16 @@ RESPONSE FORMAT (STRICT):
                             data_context += df[numeric_cols].describe().to_markdown()
                             data_context += "\n"
                         
-                        # Add value counts for categorical columns (top 10 values)
+                        # Add value counts for categorical columns
                         categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-                        for col in categorical_cols[:5]:  # Limit to first 5 categorical columns
+                        for col in categorical_cols[:5]:
                             value_counts = df[col].value_counts().head(10)
                             if len(value_counts) > 0:
                                 data_context += f"\nTop values in '{col}':\n"
                                 data_context += value_counts.to_markdown()
                                 data_context += "\n"
                     
-                    # Create full prompt with system prompt + data + user query
+                    # Create full prompt
                     full_prompt = f"""{SYSTEM_PROMPT}
 
 DATA AVAILABLE:
@@ -361,8 +476,8 @@ USER QUESTION: {user_query}
 Based on the data provided above, analyze and answer the user's question following the strict response format. Use the actual data to provide quantitative insights. Create markdown tables where appropriate to present comparisons and metrics clearly.
 """
                     
-                    # Initialize Gemini model with the exact model specified
-                    model = genai.GenerativeModel('gemini-3-pro-preview')
+                    # Initialize Gemini model
+                    model = genai.GenerativeModel('gemini-2.0-flash-exp')
                     
                     # Generate response
                     response = model.generate_content(full_prompt)
@@ -374,8 +489,11 @@ Based on the data provided above, analyze and answer the user's question followi
                     
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
-    
-    elif analyze_btn:
-        st.warning("⚠️ Please enter a question first")
+                    st.info("If this is an API key error, please reconfigure your API key using the 'Change API Key' button above.")
+        
+        elif analyze_btn:
+            st.warning("⚠️ Please enter a question first")
+    else:
+        st.info("👆 Please configure your Gemini API key above to use the chatbot")
     
     st.markdown("<br><br>", unsafe_allow_html=True)
