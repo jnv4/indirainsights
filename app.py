@@ -16,7 +16,6 @@ CSV_FILES = {
     "Source Medium": "https://azxyptwlpqmvwfskitck.supabase.co/storage/v1/object/sign/indiraivf/Source%20Medium.csv?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV8yZjZlMTVhNC1iMzkxLTRjMTQtODU2MC0zNGExMTc3M2IzYzUiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJpbmRpcmFpdmYvU291cmNlIE1lZGl1bS5jc3YiLCJpYXQiOjE3NjY1OTI0MDQsImV4cCI6MTc5ODEyODQwNH0.D-kvk6VKII2QC_R4Hx1lhpliJg1It7ZKTnL923gBa8U",
 }
 import os
-from dotenv import load_dotenv
 import duckdb
 import google.generativeai as genai
 from dotenv import load_dotenv
