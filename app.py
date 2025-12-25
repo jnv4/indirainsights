@@ -20,25 +20,16 @@ import os
 import duckdb
 import google.generativeai as genai
 
-# --------------------------------------------------
-# PAGE CONFIG
-# --------------------------------------------------
 st.set_page_config(
     page_title="Marketing Insights Dashboard",
     layout="wide"
 )
 
-# --------------------------------------------------
-# INITIALIZE SESSION STATE FOR API KEY
-# --------------------------------------------------
 if 'gemini_api_key' not in st.session_state:
     st.session_state.gemini_api_key = None
 if 'api_key_configured' not in st.session_state:
     st.session_state.api_key_configured = False
 
-# --------------------------------------------------
-# TRUE 3D KPI CARD STYLING
-# --------------------------------------------------
 st.markdown("""
 <style>
 
@@ -163,15 +154,9 @@ section[data-testid="stHorizontalBlock"] {
 </style>
 """, unsafe_allow_html=True)
 
-# --------------------------------------------------
-# HEADER
-# --------------------------------------------------
 st.title("📊 Marketing Performance Insights")
 st.caption("Aesthetic, insight-first dashboard for marketing decision makers")
 
-# --------------------------------------------------
-# DATA LOADER
-# --------------------------------------------------
 @st.cache_data(show_spinner=False)
 def load_csv(url: str) -> pd.DataFrame:
     r = requests.get(url)
@@ -189,9 +174,6 @@ def load_all_data():
             st.error(f"Error loading {name}: {e}")
     return all_data
 
-# --------------------------------------------------
-# INSIGHT HELPERS
-# --------------------------------------------------
 def top_value_metrics(series: pd.Series):
     vc = series.astype(str).value_counts()
     total = vc.sum()
@@ -202,9 +184,6 @@ def top_value_metrics(series: pd.Series):
 
     return top_val, top_share, low_val, total
 
-# --------------------------------------------------
-# API KEY VALIDATION
-# --------------------------------------------------
 def validate_api_key(api_key: str) -> bool:
     """Validate Gemini API key by attempting to configure it"""
     if not api_key or len(api_key.strip()) == 0:
@@ -218,42 +197,23 @@ def validate_api_key(api_key: str) -> bool:
         st.error(f"Invalid API key: {str(e)}")
         return False
 
-# --------------------------------------------------
-# TABS
-# --------------------------------------------------
 tab1, tab2 = st.tabs(["📈 Dashboard", "🤖 Chatbot"])
 
-# --------------------------------------------------
-# TAB 1: ORIGINAL DASHBOARD
-# --------------------------------------------------
 with tab1:
-    # --------------------------------------------------
-    # SIDEBAR
-    # --------------------------------------------------
     st.sidebar.title("📂 Insights By Field")
-    
     selected_dataset = st.sidebar.radio(
         "Select a field",
         list(CSV_FILES.keys())
     )
 
-    # --------------------------------------------------
-    # LOAD DATA
-    # --------------------------------------------------
     df = load_csv(CSV_FILES[selected_dataset])
     primary_col = df.columns[0]
 
     top_val, top_share, low_val, total_records = top_value_metrics(df[primary_col])
 
-    # --------------------------------------------------
-    # MAIN HEADER
-    # --------------------------------------------------
     st.markdown(f"## 🔍 {selected_dataset}")
     st.caption(f"Primary Dimension: `{primary_col}`")
 
-    # --------------------------------------------------
-    # CORE INSIGHT CARDS (REAL 3D)
-    # --------------------------------------------------
     c1, c2, c3, c4 = st.columns(4)
 
     c1.metric("Total Records", f"{total_records:,}")
@@ -261,9 +221,6 @@ with tab1:
     c3.metric("Top Share %", f"{top_share}%")
     c4.metric("Lowest Value", low_val)
 
-    # --------------------------------------------------
-    # CRM LEADS – CUSTOM INSIGHTS
-    # --------------------------------------------------
     if selected_dataset == "CRM Leads" and "Converted" in df.columns:
         st.divider()
         st.markdown("### 🎯 Conversion Insights")
@@ -277,27 +234,16 @@ with tab1:
         cc2.metric("Converted Leads", f"{len(converted):,}")
         cc3.metric("Conversion Rate", f"{conversion_rate}%")
 
-    # --------------------------------------------------
-    # DATA PREVIEW
-    # --------------------------------------------------
     with st.expander("🔎 Data Preview"):
         st.dataframe(
             df.head(100),
             use_container_width=True
         )
 
-# --------------------------------------------------
-# TAB 2: CHATBOT WITH API KEY CONFIGURATION
-# --------------------------------------------------
 with tab2:
     st.markdown("## 🤖 Sales & Market Intelligence Bot")
     st.markdown("Ask strategic questions about your marketing data")
-    
     st.markdown("<br>", unsafe_allow_html=True)
-    
-    # --------------------------------------------------
-    # API KEY CONFIGURATION SECTION
-    # --------------------------------------------------
     st.markdown('<div class="api-config-box">', unsafe_allow_html=True)
     st.markdown("### 🔑 API Configuration")
     
@@ -306,72 +252,21 @@ with tab2:
     
     if st.session_state.api_key_configured:
         st.markdown('<div class="success-box">✅ API Key configured successfully!</div>', unsafe_allow_html=True)
-        
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            if st.button("🔄 Change API Key", use_container_width=True):
-                st.session_state.api_key_configured = False
-                st.session_state.gemini_api_key = None
-                st.rerun()
     else:
-        st.markdown("**Choose an option to configure your Gemini API key:**")
-        
-        config_method = st.radio(
-            "Configuration Method",
-            ["Enter API Key Manually", "Upload API Key File", "Use Environment Variable"],
-            label_visibility="collapsed"
-        )
-        
-        api_key_to_validate = None
-        
-        if config_method == "Enter API Key Manually":
-            api_key_input = st.text_input(
+        api_key_input = st.text_input(
                 "Enter your Gemini API Key",
-                type="password",
-                placeholder="AIza...",
-                help="Get your API key from https://makersuite.google.com/app/apikey"
+                type="password"
             )
-            if st.button("✅ Configure API Key", type="primary"):
+        if st.button("✅ Configure API Key", type="primary"):
                 if validate_api_key(api_key_input):
                     st.session_state.gemini_api_key = api_key_input.strip()
                     st.session_state.api_key_configured = True
                     st.success("API Key configured successfully!")
-                    st.rerun()
-                    
-        elif config_method == "Upload API Key File":
-            st.info("Upload a .txt file containing your Gemini API key")
-            uploaded_file = st.file_uploader(
-                "Choose a file",
-                type=['txt'],
-                help="The file should contain only your API key"
-            )
-            if uploaded_file is not None:
-                api_key_from_file = uploaded_file.read().decode('utf-8').strip()
-                if st.button("✅ Configure from File", type="primary"):
-                    if validate_api_key(api_key_from_file):
-                        st.session_state.gemini_api_key = api_key_from_file
-                        st.session_state.api_key_configured = True
-                        st.success("API Key configured successfully!")
-                        st.rerun()
-                        
-        elif config_method == "Use Environment Variable":
-            if env_api_key:
-                st.info(f"Environment variable GEMINI_API_KEY found")
-                if st.button("✅ Use Environment Variable", type="primary"):
-                    if validate_api_key(env_api_key):
-                        st.session_state.gemini_api_key = env_api_key
-                        st.session_state.api_key_configured = True
-                        st.success("API Key configured successfully!")
-                        st.rerun()
-            else:
+                    st.rerun()          
+        else:
                 st.warning("⚠️ GEMINI_API_KEY environment variable not found")
-                st.info("Set the environment variable or choose another method")
     
     st.markdown('</div>', unsafe_allow_html=True)
-    
-    # --------------------------------------------------
-    # CHATBOT FUNCTIONALITY (only if API key is configured)
-    # --------------------------------------------------
     if st.session_state.api_key_configured:
         # Load all data for chatbot
         all_data = load_all_data()
@@ -415,12 +310,7 @@ RESPONSE FORMAT (STRICT):
 """
         
         # User input
-        user_query = st.text_area(
-            "Your Question",
-            placeholder="Example: What is our conversion rate by region? Which competitors are gaining market share?",
-            height=120,
-            label_visibility="visible"
-        )
+        user_query = st.text_area("Your Question", height=120, label_visibility="visible")
         
         st.markdown("<br>", unsafe_allow_html=True)
         
@@ -467,18 +357,13 @@ RESPONSE FORMAT (STRICT):
                                 data_context += "\n"
                     
                     # Create full prompt
-                    full_prompt = f"""{SYSTEM_PROMPT}
-
-DATA AVAILABLE:
-{data_context}
-
-USER QUESTION: {user_query}
-
-Based on the data provided above, analyze and answer the user's question following the strict response format. Use the actual data to provide quantitative insights. Create markdown tables where appropriate to present comparisons and metrics clearly.
-"""
+                    full_prompt = f"""{SYSTEM_PROMPT}DATA AVAILABLE:
+                                    {data_context}
+                                    USER QUESTION: {user_query}
+                                    """
                     
                     # Initialize Gemini model
-                    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+                    model = genai.GenerativeModel('gemini-3-pro-preview')
                     
                     # Generate response
                     response = model.generate_content(full_prompt)
