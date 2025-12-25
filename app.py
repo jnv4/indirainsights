@@ -14,6 +14,7 @@ CSV_FILES = {
     "Gender": "https://azxyptwlpqmvwfskitck.supabase.co/storage/v1/object/sign/indiraivf/Gender.csv?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV8yZjZlMTVhNC1iMzkxLTRjMTQtODU2MC0zNGExMTc3M2IzYzUiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJpbmRpcmFpdmYvR2VuZGVyLmNzdiIsImlhdCI6MTc2NjU5MjM1NCwiZXhwIjoxNzk4MTI4MzU0fQ.NUoT23Jv8-ceRX03Jw1iQ4f490j7ULPDG4kThQ7zUbo",
     "Device & Input": "https://azxyptwlpqmvwfskitck.supabase.co/storage/v1/object/sign/indiraivf/Device%20and%20Inpur.csv?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV8yZjZlMTVhNC1iMzkxLTRjMTQtODU2MC0zNGExMTc3M2IzYzUiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJpbmRpcmFpdmYvRGV2aWNlIGFuZCBJbnB1ci5jc3YiLCJpYXQiOjE3NjY1OTIzNjQsImV4cCI6MTc5ODEyODM2NH0.e-0JxFPuZRWOUIHxeY3DUIjyc95pXjdiYlC9asaS8eI",
     "Source Medium": "https://azxyptwlpqmvwfskitck.supabase.co/storage/v1/object/sign/indiraivf/Source%20Medium.csv?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV8yZjZlMTVhNC1iMzkxLTRjMTQtODU2MC0zNGExMTc3M2IzYzUiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJpbmRpcmFpdmYvU291cmNlIE1lZGl1bS5jc3YiLCJpYXQiOjE3NjY1OTI0MDQsImV4cCI6MTc5ODEyODQwNH0.D-kvk6VKII2QC_R4Hx1lhpliJg1It7ZKTnL923gBa8U",
+    "Meta" : "https://zknzcataoufenwdyhoyg.supabase.co/storage/v1/object/sign/Insights/meta.csv?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV9jYjBmYjA2Mi0zNTExLTQwZWMtYTExZi01NzEzNGViZWNlMDYiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJJbnNpZ2h0cy9tZXRhLmNzdiIsImlhdCI6MTc2NjY0ODg5OSwiZXhwIjoxNzk4MTg0ODk5fQ.6d987ItADVZkCzLJh70nNNYlErGY8HuooIl6U7-NfXI"
 }
 import os
 import duckdb
