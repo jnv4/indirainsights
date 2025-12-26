@@ -7,7 +7,38 @@ import os
 import duckdb
 import google.generativeai as genai
 import json
+# Authentication function
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if (st.session_state["username"] == "indiraivf" and 
+            st.session_state["password"] == "indira@"):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+            del st.session_state["username"]  # Don't store username
+        else:
+            st.session_state["password_correct"] = False
 
+    if "password_correct" not in st.session_state:
+        # First run, show inputs for username + password
+        st.markdown("## 🔐 Login to Marketing Insights Dashboard")
+        st.text_input("Username", key="username")
+        st.text_input("Password", type="password", key="password")
+        st.button("Login", on_click=password_entered)
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input + error
+        st.markdown("## 🔐 Login to Marketing Insights Dashboard")
+        st.text_input("Username", key="username")
+        st.text_input("Password", type="password", key="password")
+        st.button("Login", on_click=password_entered)
+        st.error("😕 User not known or password incorrect")
+        return False
+    else:
+        # Password correct
+        return True
 # Load environment variables
 load_dotenv()
 
@@ -30,7 +61,9 @@ st.set_page_config(
     page_title="Marketing Insights Dashboard",
     layout="wide"
 )
-
+# Check authentication
+if not check_password():
+    st.stop()
 # Initialize session state with API key from .env
 if 'gemini_api_key' not in st.session_state:
     env_api_key = os.getenv('GEMINI_API_KEY')
