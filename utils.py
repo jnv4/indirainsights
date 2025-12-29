@@ -14,7 +14,8 @@ import math
 import numpy as np
 # Supabase Configuration
 load_dotenv()
-
+# Define the 4 fields
+AVAILABLE_FIELDS = ["Call Center", "Website", "CRM", "Competitors"]
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = "marketing-cleaned"
@@ -39,13 +40,15 @@ def get_schema_info():
     
     # Use active datasets if available
     if st.session_state.active_datasets:
-        for name, df in st.session_state.active_datasets.items():
+        for name, data in st.session_state.active_datasets.items():
             try:
+                df = data['dataframe']
                 schema_info[name] = {
                     "columns": df.columns.tolist(),
                     "dtypes": df.dtypes.astype(str).to_dict(),
                     "sample_values": {col: df[col].dropna().unique()[:5].tolist() for col in df.columns},
-                    "row_count": len(df)
+                    "row_count": len(df),
+                    "field": data.get('field', 'Unknown')
                 }
             except Exception as e:
                 st.error(f"Error loading schema for {name}: {e}")
@@ -185,7 +188,8 @@ def register_dataset(metadata):
                 "bucket": metadata["bucket"],
                 "schema": metadata["schema"],
                 "row_count": metadata["row_count"],
-                "uploaded_at": metadata["uploaded_at"]
+                "uploaded_at": metadata["uploaded_at"],
+                "field": metadata.get("field", "Unknown")
             }).eq("dataset_name", metadata["dataset_name"]).execute()
         else:
             # Insert new record
@@ -213,6 +217,7 @@ def load_registered_datasets():
             dataset_name = record["dataset_name"]
             file_name = record["file_name"]
             bucket = record["bucket"]
+            field = record.get("field", "Unknown")
             
             try:
                 # Download CSV from Supabase Storage
@@ -220,7 +225,10 @@ def load_registered_datasets():
                 
                 # Load into DataFrame
                 df = pd.read_csv(BytesIO(file_data))
-                datasets[dataset_name] = df
+                datasets[dataset_name] = {
+                    'dataframe': df,
+                    'field': field
+                }
                 
             except Exception as e:
                 st.warning(f"Could not load dataset {dataset_name}: {str(e)}")
@@ -257,7 +265,8 @@ def delete_dataset(dataset_name: str):
         .execute()
 
     # Delete from session
-    st.session_state.active_datasets.pop(dataset_name, None)
+    if dataset_name in st.session_state.active_datasets:
+        st.session_state.active_datasets.pop(dataset_name)
 
 def check_password():
     """Returns `True` if the user had the correct password."""
@@ -356,6 +365,9 @@ def get_dataset(dataset_name: str) -> pd.DataFrame:
         raise ValueError("No dataset selected")
 
     if dataset_name in st.session_state.get("active_datasets", {}):
-        return st.session_state.active_datasets[dataset_name]
+        data = st.session_state.active_datasets[dataset_name]
+        if isinstance(data, dict):
+            return data['dataframe']
+        return data  # Backward compatibility
 
     raise ValueError(f"Dataset {dataset_name} not found")

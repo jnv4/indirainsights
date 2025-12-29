@@ -12,7 +12,7 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-from utils import has_datasets, check_password, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv
+from utils import has_datasets, check_password, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS
 # Load environment variables
 load_dotenv()
 
@@ -186,49 +186,88 @@ with tab1:
     registered_datasets = st.session_state.active_datasets
 
     if not registered_datasets:
-        st.sidebar.info("📭 No datasets available")
+        st.sidebar.info("🔭 No datasets available")
         st.info("No datasets found. Please upload data from the **Upload Data** tab.")
     else:
-        dataset_options = list(registered_datasets.keys())
+        # Group datasets by field
+        datasets_by_field = {}
+        for dataset_name, data in registered_datasets.items():
+            field = data.get('field', 'Unknown')
+            if field not in datasets_by_field:
+                datasets_by_field[field] = []
+            datasets_by_field[field].append(dataset_name)
 
-        selected_dataset = st.sidebar.radio(
+        # Sidebar: Select field
+        selected_field = st.sidebar.radio(
             "Select a field",
-            dataset_options,
-            key="selected_dataset"
+            AVAILABLE_FIELDS,
+            key="selected_field"
         )
 
-        if selected_dataset:
-            df = get_dataset(selected_dataset)
-
-            primary_col = df.columns[0]
-
-            top_val, top_share, low_val, total_records = top_value_metrics(df[primary_col])
-
-            st.markdown(f"## 🔍 {selected_dataset}")
-            st.caption(f"Primary Dimension: `{primary_col}`")
-
+        # Get all datasets for this field
+        field_datasets = datasets_by_field.get(selected_field, [])
+        
+        if not field_datasets:
+            st.info(f"No datasets uploaded for **{selected_field}** yet.")
+        else:
+            st.markdown(f"## 📊 {selected_field} - Consolidated Insights")
+            
+            # Aggregate metrics across all datasets in this field
+            total_records = 0
+            all_primary_values = []
+            
+            for dataset_name in field_datasets:
+                df = get_dataset(dataset_name)
+                total_records += len(df)
+                
+                # Collect primary column values
+                primary_col = df.columns[0]
+                all_primary_values.extend(df[primary_col].astype(str).tolist())
+            
+            # Calculate aggregated metrics
+            value_counts = pd.Series(all_primary_values).value_counts()
+            top_val = value_counts.index[0] if len(value_counts) > 0 else "N/A"
+            top_share = round((value_counts.iloc[0] / len(all_primary_values)) * 100, 2) if len(all_primary_values) > 0 else 0
+            low_val = value_counts.index[-1] if len(value_counts) > 0 else "N/A"
+            
             c1, c2, c3, c4 = st.columns(4)
-
+            
             c1.metric("Total Records", f"{total_records:,}")
             c2.metric("Top Value", top_val)
             c3.metric("Top Share %", f"{top_share}%")
             c4.metric("Lowest Value", low_val)
 
-            if selected_dataset == "CRM Leads" and "Converted" in df.columns:
+            # CRM-specific conversion analysis
+            if selected_field == "CRM":
                 st.divider()
-                st.markdown("### 🎯 Conversion Insights")
+                st.markdown("### 🎯 Conversion Insights (Across All CRM Datasets)")
+                
+                total_leads = 0
+                total_converted = 0
+                
+                for dataset_name in field_datasets:
+                    df = get_dataset(dataset_name)
+                    if "Converted" in df.columns or "converted" in df.columns:
+                        conv_col = "Converted" if "Converted" in df.columns else "converted"
+                        total_leads += len(df)
+                        total_converted += len(df[df[conv_col].astype(str).str.lower() == "true"])
+                
+                if total_leads > 0:
+                    conversion_rate = round((total_converted / total_leads) * 100, 2)
+                    
+                    cc1, cc2, cc3 = st.columns(3)
+                    cc1.metric("Total Leads", f"{total_leads:,}")
+                    cc2.metric("Converted Leads", f"{total_converted:,}")
+                    cc3.metric("Conversion Rate", f"{conversion_rate}%")
 
-                total_leads = len(df)
-                converted = df[df["Converted"].astype(str).str.lower() == "true"]
-                conversion_rate = round((len(converted) / total_leads) * 100, 2)
-
-                cc1, cc2, cc3 = st.columns(3)
-                cc1.metric("Total Leads", f"{total_leads:,}")
-                cc2.metric("Converted Leads", f"{len(converted):,}")
-                cc3.metric("Conversion Rate", f"{conversion_rate}%")
-
-            with st.expander("🔎 Data Preview"):
-                st.dataframe(df.head(100), width='stretch')
+            # Show individual datasets under this field
+            st.divider()
+            st.markdown(f"### 📁 Datasets in {selected_field}")
+            
+            for dataset_name in field_datasets:
+                df = get_dataset(dataset_name)
+                with st.expander(f"🔍 {dataset_name} ({len(df):,} rows)"):
+                    st.dataframe(df.head(100), use_container_width=True)
 
 with tab2:
     st.markdown("## 🤖 Sales & Market Intelligence Bot")
@@ -273,7 +312,8 @@ with tab2:
                         
                         data_context = ""
 
-                        for name, df in relevant_data.items():
+                        for name, data in relevant_data.items():
+                            df = data['dataframe'] if isinstance(data, dict) else data
                             table_name = name.lower().replace(" ", "_").replace("-", "_")
 
                             data_context += f"\n\n### Dataset: {name}\n"
@@ -384,6 +424,16 @@ with tab3:
     else:
         st.markdown("<br>", unsafe_allow_html=True)
             
+        # Field selection
+        selected_upload_field = st.selectbox(
+            "📌 Select Field for Upload",
+            AVAILABLE_FIELDS,
+            key="upload_field_selector"
+        )
+
+        st.markdown(f"**Uploading to:** `{selected_upload_field}`")
+        st.markdown("<br>", unsafe_allow_html=True)
+
         uploaded_files = st.file_uploader(
             "Choose files to upload",
             type=['csv', 'xlsx', 'xls', 'json'],
@@ -432,14 +482,18 @@ with tab3:
                                     "dataset_name": dataset_name,
                                     "file_name": file_name,
                                     "bucket": SUPABASE_BUCKET,
-                                    "schema": extract_schema(df_clean),  # SAFE JSON
+                                    "schema": extract_schema(df_clean),
                                     "row_count": int(len(df_clean)),
-                                    "uploaded_at": datetime.utcnow().isoformat()
+                                    "uploaded_at": datetime.utcnow().isoformat(),
+                                    "field": selected_upload_field
                                 }
 
                                 register_dataset(metadata)
 
-                                st.session_state.active_datasets[dataset_name] = df_clean
+                                st.session_state.active_datasets[dataset_name] = {
+                                    'dataframe': df_clean,
+                                    'field': selected_upload_field
+                                }
                                 success_count += 1
 
                             except Exception as e:
@@ -473,9 +527,11 @@ with tab3:
             dataset_names = list(st.session_state.active_datasets.keys())
 
             for dataset_name in dataset_names:
-                df = st.session_state.active_datasets[dataset_name]
+                data = st.session_state.active_datasets[dataset_name]
+                df = data['dataframe'] if isinstance(data, dict) else data
+                field = data.get('field', 'Unknown') if isinstance(data, dict) else 'Unknown'
 
-                with st.expander(f"📁 {dataset_name}", expanded=False):
+                with st.expander(f"🔍 {dataset_name} [{field}]", expanded=False):
 
                     # --- HEADER ROW ---
                     h1, h2, h3 = st.columns([4, 2, 1])
