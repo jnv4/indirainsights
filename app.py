@@ -215,21 +215,29 @@ with tab1:
             # Aggregate metrics across all datasets in this field
             total_records = 0
             all_primary_values = []
-            
+
             for dataset_name in field_datasets:
                 df = get_dataset(dataset_name)
                 total_records += len(df)
                 
-                # Collect primary column values
+                # Collect primary column values (excluding NaN, None, empty strings)
                 primary_col = df.columns[0]
-                all_primary_values.extend(df[primary_col].astype(str).tolist())
-            
+                valid_values = df[primary_col].dropna().astype(str)
+                valid_values = valid_values[valid_values.str.strip() != '']
+                valid_values = valid_values[valid_values.str.lower() != 'nan']
+                valid_values = valid_values[valid_values.str.lower() != 'none']
+                all_primary_values.extend(valid_values.tolist())
+
             # Calculate aggregated metrics
-            value_counts = pd.Series(all_primary_values).value_counts()
-            top_val = value_counts.index[0] if len(value_counts) > 0 else "N/A"
-            top_share = round((value_counts.iloc[0] / len(all_primary_values)) * 100, 2) if len(all_primary_values) > 0 else 0
-            low_val = value_counts.index[-1] if len(value_counts) > 0 else "N/A"
-            
+            if len(all_primary_values) > 0:
+                value_counts = pd.Series(all_primary_values).value_counts()
+                top_val = value_counts.index[0]
+                top_share = round((value_counts.iloc[0] / len(all_primary_values)) * 100, 2)
+                low_val = value_counts.index[-1]
+            else:
+                top_val = "N/A"
+                top_share = 0
+                low_val = "N/A"
             c1, c2, c3, c4 = st.columns(4)
             
             c1.metric("Total Records", f"{total_records:,}")
