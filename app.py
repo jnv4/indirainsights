@@ -237,13 +237,10 @@ with tab2:
         st.warning("📭 No datasets available")
         st.info("Upload at least one dataset to enable the chatbot.")
     else:
-        st.markdown("Ask strategic questions about your marketing data")
-        st.markdown("### 🔑 API Configuration")
-
         if st.session_state.api_key_configured:
-            st.markdown('<div class="success-box">✅ API Key configured successfully!</div>', unsafe_allow_html=True)
+            print('<div class="success-box">✅ API Key configured successfully!</div>')
         else:
-            st.warning("⚠️ GEMINI_API_KEY not found in .env file. Please enter manually.")
+            st.warning("⚠️ GEMINI_API_KEY not found.")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -275,32 +272,68 @@ with tab2:
                                     st.warning(f"Could not load {file_name}: {str(e)}")
                         
                         data_context = ""
-                        
+
                         for name, df in relevant_data.items():
                             table_name = name.lower().replace(" ", "_").replace("-", "_")
-                            
+
                             data_context += f"\n\n### Dataset: {name}\n"
                             data_context += f"Table name: {table_name}\n"
-                            data_context += f"Total records: {len(df)}\n"
-                            data_context += f"Columns: {', '.join(df.columns.tolist())}\n"
-                            
-                            data_context += f"\nSample data (first 50 rows):\n"
-                            data_context += df.head(50).to_markdown(index=False)
-                            data_context += "\n"
-                            
-                            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                            data_context += f"Total rows: {len(df)}\n"
+                            data_context += f"Columns ({len(df.columns)}): {', '.join(df.columns)}\n"
+
+                            # ---------- Numeric summary ----------
+                            numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
                             if numeric_cols:
-                                data_context += f"\nNumeric column statistics:\n"
-                                data_context += df[numeric_cols].describe().to_markdown()
-                                data_context += "\n"
-                            
-                            categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-                            for col in categorical_cols[:5]:
-                                value_counts = df[col].value_counts().head(10)
-                                if len(value_counts) > 0:
-                                    data_context += f"\nTop values in '{col}':\n"
-                                    data_context += value_counts.to_markdown()
-                                    data_context += "\n"
+                                numeric_summary = (
+                                    df[numeric_cols]
+                                    .agg(["min", "max", "mean", "median", "std"])
+                                    .round(2)
+                                    .to_dict()
+                                )
+
+                                data_context += "\nNumeric column summary (distribution-level):\n"
+                                for col, stats in numeric_summary.items():
+                                    data_context += (
+                                        f"- {col}: min={stats['min']}, "
+                                        f"max={stats['max']}, "
+                                        f"mean={stats['mean']}, "
+                                        f"median={stats['median']}, "
+                                        f"std={stats['std']}\n"
+                                    )
+
+                            # ---------- Categorical dominance ----------
+                            categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
+                            if categorical_cols:
+                                data_context += "\nCategorical dominance (top 3 values):\n"
+                                for col in categorical_cols[:4]:  # cap to avoid noise
+                                    vc = df[col].value_counts(normalize=True).head(3)
+                                    dominance = {k: round(v * 100, 2) for k, v in vc.items()}
+                                    data_context += f"- {col}: {dominance}\n"
+
+                            # ---------- Skew / imbalance signal ----------
+                            if numeric_cols:
+                                skew_info = {
+                                    col: round(df[col].skew(), 2)
+                                    for col in numeric_cols
+                                    if df[col].nunique() > 5
+                                }
+                                if skew_info:
+                                    data_context += "\nDistribution skew indicators:\n"
+                                    for col, skew in skew_info.items():
+                                        data_context += f"- {col}: skew={skew}\n"
+
+                            # ---------- Missing data ----------
+                            missing = (
+                                df.isna().mean()
+                                .mul(100)
+                                .round(2)
+                                .to_dict()
+                            )
+                            significant_missing = {k: v for k, v in missing.items() if v > 5}
+                            if significant_missing:
+                                data_context += "\nMissing data (>5%):\n"
+                                for col, pct in significant_missing.items():
+                                    data_context += f"- {col}: {pct}% missing\n"
                         print(data_context)
                         with st.spinner("🤔 Generating insights..."):
                             full_prompt = f"""{SYSTEM_PROMPT}
