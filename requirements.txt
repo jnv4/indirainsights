@@ -4,3 +4,5 @@ duckdb
 google-generativeai
 tabulate
 dotenv
+supabase
+openpyxl
