@@ -1,0 +1,116 @@
+/* Card base */
+div[data-testid="metric-container"] {
+    background: linear-gradient(160deg, #0f172a 0%, #1e293b 100%);
+    border-radius: 18px;
+    padding: 22px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+
+    box-shadow:
+        0 12px 24px rgba(0, 0, 0, 0.55),
+        0 2px 6px rgba(0, 0, 0, 0.4),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+    transform: perspective(1000px) translateZ(0);
+    transition: all 0.25s ease;
+}
+
+/* Hover lift */
+div[data-testid="metric-container"]:hover {
+    transform: perspective(1000px) translateY(-6px) scale(1.02);
+    box-shadow:
+        0 20px 36px rgba(0, 0, 0, 0.75),
+        0 6px 14px rgba(0, 0, 0, 0.6),
+        inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+/* Metric label */
+div[data-testid="metric-container"] label {
+    font-size: 13px;
+    color: #c7d2fe;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* Metric value */
+div[data-testid="metric-container"] div {
+    font-size: 30px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+/* Section spacing */
+section[data-testid="stHorizontalBlock"] {
+    gap: 1.4rem;
+}
+
+/* Chatbot tab styling */
+.stTextArea textarea {
+    background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%) !important;
+    border: 1px solid rgba(148, 163, 184, 0.3) !important;
+    border-radius: 12px !important;
+    color: #e2e8f0 !important;
+    padding: 16px !important;
+    font-size: 15px !important;
+}
+
+.stTextArea textarea::placeholder {
+    color: #94a3b8 !important;
+}
+
+.stButton button {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 10px !important;
+    padding: 12px 24px !important;
+    font-weight: 600 !important;
+    font-size: 16px !important;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
+    transition: all 0.3s ease !important;
+}
+
+.stButton button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.6) !important;
+}
+
+/* Response styling */
+.response-container {
+    background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%);
+    border-radius: 16px;
+    padding: 32px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    box-shadow:
+        0 8px 20px rgba(0, 0, 0, 0.4),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    margin-top: 24px;
+    color: #e2e8f0;
+}
+
+.response-container h1,
+.response-container h2,
+.response-container h3 {
+    color: #f1f5f9;
+}
+
+.response-container table {
+    color: #e2e8f0;
+}
+
+/* API Key Config Box */
+.api-config-box {
+    background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%);
+    border-radius: 16px;
+    padding: 24px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+    margin-bottom: 24px;
+}
+
+.success-box {
+    background: linear-gradient(160deg, #064e3b 0%, #022c22 100%);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 12px;
+    padding: 16px;
+    color: #6ee7b7;
+}

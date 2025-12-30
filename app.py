@@ -12,14 +12,18 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-from utils import has_datasets, check_password, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS
-# Load environment variables
+from utils import has_datasets, check_password,generate_sql_from_plan, validate_and_fix_query, execute_sql_with_retry, extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables, create_query_plan, execute_smart_query, generate_result_explanation
 load_dotenv()
 
 st.set_page_config(
     page_title="Marketing Insights Dashboard",
     layout="wide"
 )
+def load_css(file_name: str):
+    with open(file_name) as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+load_css("styles.css")
 
 if not check_password():
     st.stop()
@@ -50,136 +54,9 @@ if 'gemini_api_key' not in st.session_state:
 if 'api_key_configured' not in st.session_state:
     st.session_state.api_key_configured = bool(st.session_state.gemini_api_key)
 
-# ━━━━━━━━━━━━━━━━━━━━ STYLING ━━━━━━━━━━━━━━━━━━━━
-
-st.markdown("""
-            <style>
-
-            /* Card base */
-            div[data-testid="metric-container"] {
-                background: linear-gradient(160deg, #0f172a 0%, #1e293b 100%);
-                border-radius: 18px;
-                padding: 22px;
-                border: 1px solid rgba(148, 163, 184, 0.18);
-
-                /* REAL DEPTH */
-                box-shadow:
-                    0 12px 24px rgba(0, 0, 0, 0.55),
-                    0 2px 6px rgba(0, 0, 0, 0.4),
-                    inset 0 1px 0 rgba(255, 255, 255, 0.08);
-
-                transform: perspective(1000px) translateZ(0);
-                transition: all 0.25s ease;
-            }
-
-            /* Hover lift */
-            div[data-testid="metric-container"]:hover {
-                transform: perspective(1000px) translateY(-6px) scale(1.02);
-                box-shadow:
-                    0 20px 36px rgba(0, 0, 0, 0.75),
-                    0 6px 14px rgba(0, 0, 0, 0.6),
-                    inset 0 1px 0 rgba(255, 255, 255, 0.12);
-            }
-
-            /* Metric label */
-            div[data-testid="metric-container"] label {
-                font-size: 13px;
-                color: #c7d2fe;
-                letter-spacing: 0.5px;
-                text-transform: uppercase;
-            }
-
-            /* Metric value */
-            div[data-testid="metric-container"] div {
-                font-size: 30px;
-                font-weight: 700;
-                color: #ffffff;
-            }
-
-            /* Section spacing */
-            section[data-testid="stHorizontalBlock"] {
-                gap: 1.4rem;
-            }
-
-            /* Chatbot tab styling */
-            .stTextArea textarea {
-                background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%) !important;
-                border: 1px solid rgba(148, 163, 184, 0.3) !important;
-                border-radius: 12px !important;
-                color: #e2e8f0 !important;
-                padding: 16px !important;
-                font-size: 15px !important;
-            }
-
-            .stTextArea textarea::placeholder {
-                color: #94a3b8 !important;
-            }
-
-            .stButton button {
-                background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
-                color: white !important;
-                border: none !important;
-                border-radius: 10px !important;
-                padding: 12px 24px !important;
-                font-weight: 600 !important;
-                font-size: 16px !important;
-                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
-                transition: all 0.3s ease !important;
-            }
-
-            .stButton button:hover {
-                transform: translateY(-2px) !important;
-                box-shadow: 0 6px 16px rgba(59, 130, 246, 0.6) !important;
-            }
-
-            /* Response styling */
-            .response-container {
-                background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%);
-                border-radius: 16px;
-                padding: 32px;
-                border: 1px solid rgba(148, 163, 184, 0.2);
-                box-shadow: 
-                    0 8px 20px rgba(0, 0, 0, 0.4),
-                    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-                margin-top: 24px;
-                color: #e2e8f0;
-            }
-
-            .response-container h1,
-            .response-container h2,
-            .response-container h3 {
-                color: #f1f5f9;
-            }
-
-            .response-container table {
-                color: #e2e8f0;
-            }
-
-            /* API Key Config Box */
-            .api-config-box {
-                background: linear-gradient(160deg, #1e293b 0%, #0f172a 100%);
-                border-radius: 16px;
-                padding: 24px;
-                border: 1px solid rgba(148, 163, 184, 0.2);
-                box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
-                margin-bottom: 24px;
-            }
-
-            .success-box {
-                background: linear-gradient(160deg, #064e3b 0%, #022c22 100%);
-                border: 1px solid rgba(16, 185, 129, 0.3);
-                border-radius: 12px;
-                padding: 16px;
-                color: #6ee7b7;
-            }
-
-            </style>
-            """, unsafe_allow_html=True)
-
 st.title("📊 Marketing Performance Insights")
-st.caption("Aesthetic, insight-first dashboard for marketing decision makers")
 
-tab1, tab2, tab3 = st.tabs(["📈 Dashboard", "🤖 Chatbot", "📤 Upload Data"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Dashboard", "📈AI Report", "📤 Upload Data", "🔍 AI Analytics"])
 with tab1:
     st.sidebar.title("📂 Insights By Field")
 
@@ -275,14 +152,14 @@ with tab1:
             for dataset_name in field_datasets:
                 df = get_dataset(dataset_name)
                 with st.expander(f"🔍 {dataset_name} ({len(df):,} rows)"):
-                    st.dataframe(df.head(100), use_container_width=True)
+                    st.dataframe(df.head(100), width='stretch')
 
 with tab2:
-    st.markdown("## 🤖 Sales & Market Intelligence Bot")
+    st.markdown("## 🤖 Sales & Market Intelligence Report Bot")
 
     if not has_datasets():
         st.warning("📭 No datasets available")
-        st.info("Upload at least one dataset to enable the chatbot.")
+        st.info("Upload at least one dataset to enable the report.")
     else:
         if st.session_state.api_key_configured:
             print('<div class="success-box">✅ API Key configured successfully!</div>')
@@ -292,7 +169,7 @@ with tab2:
         st.markdown('</div>', unsafe_allow_html=True)
 
         if st.session_state.api_key_configured:
-            from sys_prompt import SYSTEM_PROMPT
+            from prompts import SYSTEM_PROMPT
             
             user_query = st.text_area("Your Question", height=120, label_visibility="visible")
             
@@ -572,3 +449,115 @@ with tab3:
 
         else:
             st.info("No custom datasets uploaded yet. Upload files above to get started.")
+
+with tab4:
+    st.markdown("## 🔍 AI Analytics")
+    st.markdown("Ask natural language questions and get answers based on your data using intelligent query planning.")
+    
+    if not has_datasets():
+        st.warning("📭 No datasets available")
+        st.info("Upload at least one dataset to use the SQL Query Generator.")
+    else:
+        if not st.session_state.api_key_configured:
+            st.warning("⚠️ GEMINI_API_KEY not found. Please configure API key.")
+        else:
+            # Initialize DuckDB connection
+            if 'duckdb_conn' not in st.session_state:
+                st.session_state.duckdb_conn = None
+            
+            # Load data into DuckDB
+            with st.spinner("📊 Initializing DuckDB tables..."):
+                try:
+                    conn = initialize_duckdb_from_datasets()
+                    st.session_state.duckdb_conn = conn
+                        
+                except Exception as e:
+                    st.error(f"Error initializing DuckDB: {str(e)}")
+                    st.stop()
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # User input
+            user_question = st.text_area(
+                "Ask a question about your data",
+                height=100 )
+            show_visuals = st.checkbox(
+                "📊 Generate visualizations (charts + insights)",
+                value=True
+            )
+
+            generate_btn = st.button("🔍 Generate Answer", type="primary")
+            
+            if generate_btn and user_question:
+                with st.spinner("🧠 Analyzing your question..."):
+                    try:
+                        # Extract enhanced schema
+                        schema_info = extract_duckdb_schema(st.session_state.duckdb_conn)
+                        
+                        query_plan = create_query_plan(
+                            user_question, 
+                            schema_info,
+                            st.session_state.gemini_api_key
+                        )
+                        sql_query = generate_sql_from_plan(
+                            query_plan,
+                            schema_info,
+                            st.session_state.gemini_api_key
+                        )
+                        validated_query = validate_and_fix_query(
+                            sql_query,
+                            query_plan,
+                            schema_info,
+                            st.session_state.gemini_api_key
+                        )
+                        result_df, execution_error, final_query = execute_sql_with_retry(
+                            st.session_state.duckdb_conn,
+                            validated_query,
+                            schema_info,
+                            st.session_state.gemini_api_key,
+                            max_retries=3
+                        )
+                        
+                        if execution_error:
+                            st.error(f"❌ Query Execution Failed: {execution_error}")
+                            with st.expander("🔍 Failed SQL Query", expanded=True):
+                                st.code(final_query, language="sql")
+                            st.info("💡 Try rephrasing your question or check if the column/table names are correct.")
+                            st.stop()
+                        
+                        # Step 6: Generate AI explanation
+                        with st.spinner("💡 Generating intelligent explanation..."):
+                            explanation = generate_result_explanation(
+                                user_question,
+                                result_df,
+                                query_plan,
+                                st.session_state.gemini_api_key
+                            )
+                        if show_visuals==True:
+                            from utils import generate_ai_plot_from_result
+                            # Generate AI plots + insights
+                            with st.spinner("📊 Generating AI visualizations & insights..."):
+                                ai_plot_response = generate_ai_plot_from_result(
+                                    result_df,
+                                    user_question,
+                                    st.session_state.gemini_api_key
+                                )
+                                # Gemini image responses render automatically
+                                for part in ai_plot_response.candidates[0].content.parts:
+                                    if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
+                                        st.image(part.inline_data.data)
+                                    elif hasattr(part, "text"):
+                                        st.markdown(part.text)
+                        st.markdown(explanation)
+                    except json.JSONDecodeError as e:
+                        st.error(f"❌ Error parsing query plan: {str(e)}")
+                        st.info("The AI had trouble creating a structured plan. Try rephrasing your question.")
+                        with st.expander("🔍 Debug Info"):
+                            st.code(str(e))
+                    
+                    except Exception as e:
+                        st.error(f"❌ Unexpected Error: {str(e)}")
+                        st.info("Something went wrong. Please try again or rephrase your question.")
+                        import traceback
+                        with st.expander("🔍 Debug Info"):
+                            st.code(traceback.format_exc())
