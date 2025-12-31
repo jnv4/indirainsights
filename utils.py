@@ -703,6 +703,7 @@ def generate_strict_sql_from_plan(single_query_plan: dict, schema_info: dict, ap
     EXECUTION PLAN:
     {plan_str}
     Create as simple and straight-forward query as you can to avoid unexpected errors.
+    Limit 50 for every query.
     STRICT RULES:
     1. Use ONLY the tables, columns, filters, aggregations, joins, grouping, and ordering specified in the plan
     2. Do NOT add any joins not in the plan
@@ -842,13 +843,13 @@ def execute_single_query_with_retry(conn, sql_query: str, schema_info: dict, api
     return pd.DataFrame(), "Query execution failed", current_query
 
 def execute_multi_query_plan(multi_plan: dict, conn, schema_info: dict, api_key: str):
-    """Execute all queries in the multi-query plan"""
+    """Execute all queries in the multi-query plan - best effort execution"""
     import pandas as pd
     
-    query_results = {}
+    successful_results = {}
+    failed_queries = {}
     executed_queries = {}
     
-    # Sort queries by dependencies
     queries = multi_plan['queries']
     executed_ids = set()
     
@@ -861,30 +862,44 @@ def execute_multi_query_plan(multi_plan: dict, conn, schema_info: dict, api_key:
             if query_id in executed_ids:
                 continue
             
-            # Check if dependencies are satisfied
             depends_on = query_obj.get('depends_on', [])
-            if all(dep_id in executed_ids for dep_id in depends_on):
-                # Execute this query
-                
+            dependencies_met = all(dep_id in executed_ids for dep_id in depends_on)
+            
+            if dependencies_met:
                 sql_query = generate_strict_sql_from_plan(query_obj['plan'], schema_info, api_key)
-                
                 
                 result_df, error, final_query = execute_single_query_with_retry(
                     conn, sql_query, schema_info, api_key, max_retries=3
                 )
                 
-                if error:
-                    return None, f"Query {query_id} failed: {error}", None
-                
-                query_results[query_id] = result_df
                 executed_queries[query_id] = final_query
+                
+                if error:
+                    failed_queries[query_id] = {
+                        "sql": final_query,
+                        "error": error
+                    }
+                else:
+                    successful_results[query_id] = result_df
+                
                 executed_ids.add(query_id)
                 progress_made = True
         
         if not progress_made:
-            return None, "Circular dependency detected in query plan", None
-    
-    return query_results, None, executed_queries
+            remaining = [q['id'] for q in queries if q['id'] not in executed_ids]
+            for query_id in remaining:
+                failed_queries[query_id] = {
+                    "sql": "Not executed",
+                    "error": "Circular dependency or unmet dependency"
+                }
+                executed_ids.add(query_id)
+            break
+    #with open("output.txt", "w", encoding="utf-8") as f:
+    #    f.write(str(successful_results))
+    return {
+        "success": successful_results,
+        "failed": failed_queries
+    }
 
 def generate_final_explanation(question: str, query_results: dict, multi_plan: dict, api_key: str) -> str:
     """Generate explanation strictly based on actual query results"""

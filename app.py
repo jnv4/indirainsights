@@ -491,80 +491,72 @@ with tab4:
             if generate_btn and user_question:
                 with st.spinner("🧠 Analyzing your question..."):
                     try:
-                        # Extract schema
                         schema_info = extract_duckdb_schema(st.session_state.duckdb_conn)
                         
-                        # Step 1: Create multi-query pla
                         multi_plan = create_multi_query_plan(
                             user_question,
                             schema_info,
                             st.session_state.gemini_api_key
                         )
                         
-        
-                        query_results, execution_error, executed_queries = execute_multi_query_plan(
+                        execution_result = execute_multi_query_plan(
                             multi_plan,
                             st.session_state.duckdb_conn,
                             schema_info,
                             st.session_state.gemini_api_key
                         )
-                        print(query_results)
-                        print(executed_queries)
-                        with st.expander("📋 Query Results", expanded=False):
-                            st.json(query_results)
-                        if execution_error:
-                            st.error(f"❌ Query Execution Failed: {execution_error}")
-                            st.info("💡 Try rephrasing your question or check if the column/table names are correct.")
-                            st.stop()
                         
-                        # Step 3: Check if all results are empty
-                        all_empty = all(df.empty for df in query_results.values())
-                        if all_empty:
+                        successful_results = execution_result["success"]
+                        failed_queries = execution_result["failed"]
+                        
+                        non_empty_results = {
+                            qid: df for qid, df in successful_results.items() 
+                            if not df.empty
+                        }
+                        
+                        if not non_empty_results:
                             st.warning("No relevant data found. Try rephrasing your question.")
+                            
+                            if failed_queries:
+                                with st.expander("🔍 Debug Info (Optional)", expanded=False):
+                                    st.json({"failed_queries": failed_queries})
                             st.stop()
                         
                         explanation = generate_final_explanation(
                             user_question,
-                            query_results,
+                            non_empty_results,
                             multi_plan,
                             st.session_state.gemini_api_key
                         )
                         
-                        # Step 5: Generate visualizations if requested
                         ai_plot_response = None
                         if show_visuals:
                             from utils import generate_ai_plot_from_result
                             
-                            # Use the primary result for visualization
-                            primary_result = list(query_results.values())[0]
+                            primary_result = list(non_empty_results.values())[0]
                             
-                            if not primary_result.empty:
-                                st.info("📊 Generating visualizations...")
-                                ai_plot_response = generate_ai_plot_from_result(
-                                    primary_result,
-                                    user_question,
-                                    st.session_state.gemini_api_key
-                                )
-                                
-                                for part in ai_plot_response.candidates[0].content.parts:
-                                    if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
-                                        st.image(part.inline_data.data)
-                                    elif hasattr(part, "text"):
-                                        st.markdown(part.text)
+                            st.info("📊 Generating visualizations...")
+                            ai_plot_response = generate_ai_plot_from_result(
+                                primary_result,
+                                user_question,
+                                st.session_state.gemini_api_key
+                            )
+                            
+                            for part in ai_plot_response.candidates[0].content.parts:
+                                if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
+                                    st.image(part.inline_data.data)
+                                elif hasattr(part, "text"):
+                                    st.markdown(part.text)
                         
-                        # Display explanation
                         st.markdown(explanation)
                         
-                        # Store results for PDF generation
                         if 'pdf_data' not in st.session_state:
                             st.session_state.pdf_data = {}
                         
-                        # Generate PDF download button
                         st.markdown("---")
                         
                         try:
-                            # Use primary result for PDF
-                            primary_result = list(query_results.values())[0]
+                            primary_result = list(non_empty_results.values())[0]
                             
                             with st.spinner("📄 Preparing PDF report..."):
                                 pdf_buffer = create_pdf_report(
@@ -587,7 +579,11 @@ with tab4:
                             )
                         except Exception as pdf_error:
                             st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
-                            st.info("You can still view the results above.")
+                        
+                        if failed_queries:
+                            with st.expander("⚠️ Some queries failed (optional debug)", expanded=False):
+                                for qid, fail_info in failed_queries.items():
+                                    st.code(f"Query: {qid}\nSQL: {fail_info['sql']}\nError: {fail_info['error']}")
                     
                     except Exception as e:
                         st.error(f"❌ Unexpected Error: {str(e)}")
