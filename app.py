@@ -12,7 +12,7 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-from utils import has_datasets, check_password,generate_sql_from_plan, validate_and_fix_query, execute_sql_with_retry, extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables, create_query_plan, execute_smart_query, generate_result_explanation
+from utils import create_multi_query_plan, generate_strict_sql_from_plan, fix_sql_syntax_only, execute_multi_query_plan, execute_single_query_with_retry, generate_final_explanation, has_datasets, create_pdf_report, check_password,  extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables
 load_dotenv()
 
 st.set_page_config(
@@ -450,195 +450,12 @@ with tab3:
         else:
             st.info("No custom datasets uploaded yet. Upload files above to get started.")
 
-# Add these imports at the top of your file
-import streamlit as st
-import pandas as pd
-import json
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
-from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER
-from io import BytesIO
-import base64
-from markdown import markdown
-from bs4 import BeautifulSoup
-import tempfile
-import os
-
-def create_pdf_report(user_question, explanation, result_df, ai_plot_response=None):
-    """Generate a PDF report with markdown formatting and images"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer, 
-        pagesize=letter, 
-        topMargin=0.5*inch, 
-        bottomMargin=0.5*inch,
-        leftMargin=0.75*inch,
-        rightMargin=0.75*inch
-    )
-    story = []
-    styles = getSampleStyleSheet()
-    
-    # Custom styles with word wrapping
-    title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=18,
-        textColor='#1f77b4',
-        spaceAfter=12,
-        alignment=TA_CENTER,
-        wordWrap='CJK'
-    )
-    
-    heading_style = ParagraphStyle(
-        'CustomHeading',
-        parent=styles['Heading2'],
-        fontSize=14,
-        textColor='#2c3e50',
-        spaceAfter=10,
-        spaceBefore=10,
-        wordWrap='CJK'
-    )
-    
-    normal_style = ParagraphStyle(
-        'CustomNormal',
-        parent=styles['Normal'],
-        fontSize=10,
-        leading=14,
-        wordWrap='CJK',
-        spaceBefore=6,
-        spaceAfter=6
-    )
-    
-    bullet_style = ParagraphStyle(
-        'CustomBullet',
-        parent=styles['Normal'],
-        fontSize=10,
-        leading=14,
-        leftIndent=20,
-        wordWrap='CJK',
-        spaceBefore=3,
-        spaceAfter=3
-    )
-    
-    # Title
-    story.append(Paragraph("AI Analytics Report", title_style))
-    story.append(Spacer(1, 0.3*inch))
-    
-    # Question
-    story.append(Paragraph("<b>Question:</b>", heading_style))
-    story.append(Paragraph(user_question, normal_style))
-    story.append(Spacer(1, 0.2*inch))
-    
-    # Add visualizations if present
-    if ai_plot_response:
-        story.append(Paragraph("<b>Visualizations:</b>", heading_style))
-        temp_files = []
-        for part in ai_plot_response.candidates[0].content.parts:
-            if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
-                try:
-                    # Get the raw bytes data
-                    img_data = part.inline_data.data
-                    
-                    # If it's a string, it might be base64 encoded
-                    if isinstance(img_data, str):
-                        img_data = base64.b64decode(img_data)
-                    
-                    # Save image to temporary file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.png', mode='wb') as tmp_file:
-                        tmp_file.write(img_data)
-                        img_path = tmp_file.name
-                        temp_files.append(img_path)
-                    
-                    # Verify the file was written correctly
-                    if os.path.getsize(img_path) > 0:
-                        try:
-                            img = RLImage(img_path, width=6*inch, height=4*inch, kind='proportional')
-                            story.append(img)
-                            story.append(Spacer(1, 0.2*inch))
-                        except Exception as img_error:
-                            story.append(Paragraph(f"[Image could not be rendered]", normal_style))
-                            story.append(Spacer(1, 0.2*inch))
-                except Exception as e:
-                    story.append(Paragraph(f"[Error processing image]", normal_style))
-                    story.append(Spacer(1, 0.2*inch))
-        
-        story.append(Spacer(1, 0.1*inch))
-    
-    # Explanation (convert markdown to PDF-friendly format)
-    story.append(Paragraph("<b>Analysis:</b>", heading_style))
-    
-    # Process the explanation text line by line to preserve formatting
-    try:
-        # Split explanation into lines
-        lines = explanation.split('\n')
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                story.append(Spacer(1, 0.05*inch))
-                continue
-            
-            # Check if it's a header (starts with ###, ##, or #)
-            if line.startswith('###'):
-                text = line.replace('###', '').strip()
-                story.append(Paragraph(f"<b>{text}</b>", styles['Heading3']))
-            elif line.startswith('##'):
-                text = line.replace('##', '').strip()
-                story.append(Paragraph(f"<b>{text}</b>", heading_style))
-            elif line.startswith('#'):
-                text = line.replace('#', '').strip()
-                story.append(Paragraph(f"<b>{text}</b>", heading_style))
-            # Check if it's a bullet point
-            elif line.startswith('*') or line.startswith('-') or line.startswith('•'):
-                text = line.lstrip('*-• ').strip()
-                story.append(Paragraph(f"• {text}", bullet_style))
-            # Check if it contains bold text
-            elif '**' in line:
-                # Replace markdown bold with HTML bold
-                text = line.replace('**', '<b>', 1).replace('**', '</b>', 1)
-                story.append(Paragraph(text, normal_style))
-            else:
-                story.append(Paragraph(line, normal_style))
-    
-    except Exception as e:
-        # Fallback to raw text if processing fails
-        story.append(Paragraph(explanation, normal_style))
-    
-    # Build PDF
-    try:
-        doc.build(story)
-    except Exception as e:
-        # If PDF build fails, clean up temp files and re-raise
-        if ai_plot_response and 'temp_files' in locals():
-            for temp_file in temp_files:
-                try:
-                    if os.path.exists(temp_file):
-                        os.unlink(temp_file)
-                except:
-                    pass
-        raise e
-    
-    # Clean up temporary image files
-    if ai_plot_response and 'temp_files' in locals():
-        for temp_file in temp_files:
-            try:
-                if os.path.exists(temp_file):
-                    os.unlink(temp_file)
-            except:
-                pass
-    
-    buffer.seek(0)
-    return buffer
-
-# Tab4 code
 with tab4:
     st.markdown("## 🔍 AI Analytics")
     st.markdown("Ask natural language questions and get answers based on your data using intelligent query planning.")
     
     if not has_datasets():
-        st.warning("📭 No datasets available")
+        st.warning("🔭 No datasets available")
         st.info("Upload at least one dataset to use the SQL Query Generator.")
     else:
         if not st.session_state.api_key_configured:
@@ -663,10 +480,10 @@ with tab4:
             # User input
             user_question = st.text_area(
                 "Ask a question about your data",
-                height=100 )
+                height=100)
             show_visuals = st.checkbox(
                 "📊 Generate visualizations (charts + insights)",
-                value=True
+                value=False
             )
 
             generate_btn = st.button("🔍 Generate Answer", type="primary")
@@ -674,70 +491,71 @@ with tab4:
             if generate_btn and user_question:
                 with st.spinner("🧠 Analyzing your question..."):
                     try:
-                        # Extract enhanced schema
+                        # Extract schema
                         schema_info = extract_duckdb_schema(st.session_state.duckdb_conn)
                         
-                        query_plan = create_query_plan(
-                            user_question, 
+                        # Step 1: Create multi-query pla
+                        multi_plan = create_multi_query_plan(
+                            user_question,
                             schema_info,
                             st.session_state.gemini_api_key
-                        )
-                        sql_query = generate_sql_from_plan(
-                            query_plan,
-                            schema_info,
-                            st.session_state.gemini_api_key
-                        )
-                        validated_query = validate_and_fix_query(
-                            sql_query,
-                            query_plan,
-                            schema_info,
-                            st.session_state.gemini_api_key
-                        )
-                        result_df, execution_error, final_query = execute_sql_with_retry(
-                            st.session_state.duckdb_conn,
-                            validated_query,
-                            schema_info,
-                            st.session_state.gemini_api_key,
-                            max_retries=3
                         )
                         
+        
+                        query_results, execution_error, executed_queries = execute_multi_query_plan(
+                            multi_plan,
+                            st.session_state.duckdb_conn,
+                            schema_info,
+                            st.session_state.gemini_api_key
+                        )
+                        print(query_results)
+                        print(executed_queries)
+                        with st.expander("📋 Query Results", expanded=False):
+                            st.json(query_results)
                         if execution_error:
                             st.error(f"❌ Query Execution Failed: {execution_error}")
-                            with st.expander("🔍 Failed SQL Query", expanded=True):
-                                st.code(final_query, language="sql")
                             st.info("💡 Try rephrasing your question or check if the column/table names are correct.")
                             st.stop()
-                        print(result_df)
                         
-                        # Step 6: Generate AI explanation
-                        with st.spinner("💡 Generating intelligent explanation..."):
-                            explanation = generate_result_explanation(
-                                user_question,
-                                result_df,
-                                query_plan,
-                                st.session_state.gemini_api_key
-                            )
+                        # Step 3: Check if all results are empty
+                        all_empty = all(df.empty for df in query_results.values())
+                        if all_empty:
+                            st.warning("No relevant data found. Try rephrasing your question.")
+                            st.stop()
                         
+                        explanation = generate_final_explanation(
+                            user_question,
+                            query_results,
+                            multi_plan,
+                            st.session_state.gemini_api_key
+                        )
+                        
+                        # Step 5: Generate visualizations if requested
                         ai_plot_response = None
-                        if show_visuals==True:
+                        if show_visuals:
                             from utils import generate_ai_plot_from_result
-                            # Generate AI plots + insights
-                            with st.spinner("📊 Generating AI visualizations & insights..."):
+                            
+                            # Use the primary result for visualization
+                            primary_result = list(query_results.values())[0]
+                            
+                            if not primary_result.empty:
+                                st.info("📊 Generating visualizations...")
                                 ai_plot_response = generate_ai_plot_from_result(
-                                    result_df,
+                                    primary_result,
                                     user_question,
                                     st.session_state.gemini_api_key
                                 )
-                                # Gemini image responses render automatically
+                                
                                 for part in ai_plot_response.candidates[0].content.parts:
                                     if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
                                         st.image(part.inline_data.data)
                                     elif hasattr(part, "text"):
                                         st.markdown(part.text)
                         
+                        # Display explanation
                         st.markdown(explanation)
                         
-                        # Store the results in session state to prevent disappearing
+                        # Store results for PDF generation
                         if 'pdf_data' not in st.session_state:
                             st.session_state.pdf_data = {}
                         
@@ -745,15 +563,17 @@ with tab4:
                         st.markdown("---")
                         
                         try:
+                            # Use primary result for PDF
+                            primary_result = list(query_results.values())[0]
+                            
                             with st.spinner("📄 Preparing PDF report..."):
                                 pdf_buffer = create_pdf_report(
-                                    user_question, 
-                                    explanation, 
-                                    result_df,
+                                    user_question,
+                                    explanation,
+                                    primary_result,
                                     ai_plot_response if show_visuals else None
                                 )
                                 
-                                # Store PDF data in session state
                                 st.session_state.pdf_data['buffer'] = pdf_buffer.getvalue()
                                 st.session_state.pdf_data['filename'] = f"ai_analytics_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                             
@@ -775,4 +595,3 @@ with tab4:
                         import traceback
                         with st.expander("🔍 Debug Info"):
                             st.code(traceback.format_exc())
-                            

@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 import requests
+import os
 from io import StringIO, BytesIO
 from dotenv import load_dotenv
-import os
 import duckdb
 import google.generativeai as genai
 import json
@@ -12,6 +12,15 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER
+import base64
+from markdown import markdown
+from bs4 import BeautifulSoup
+import tempfile
 load_dotenv()
 AVAILABLE_FIELDS = ["Call Center", "Website", "CRM", "Competitors"]
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -574,100 +583,78 @@ def extract_duckdb_schema(conn):
     
     return schema_info
 
-def create_query_plan(question: str, schema_info: dict, api_key: str) -> dict:
-    """Create intelligent query execution plan using enhanced schema"""
+def create_multi_query_plan(question: str, schema_info: dict, api_key: str) -> dict:
+    """Create multi-query execution plan with dependencies"""
     import google.generativeai as genai
     
     genai.configure(api_key=api_key)
     
-    # Build enhanced schema description with intelligence
-    schema_description = "AVAILABLE DATASETS WITH INTELLIGENCE:\n\n"
+    # Build schema description
+    schema_description = "AVAILABLE DATASETS:\n\n"
     for table_name, info in schema_info.items():
         schema_description += f"TABLE: {table_name}\n"
-        schema_description += f"Role: {info.get('dataset_role', 'unknown')} | Business Entity: {info.get('business_entity', 'Other')}\n"
         schema_description += f"Rows: {info['row_count']}\n"
-        
-        if info.get('primary_keys'):
-            schema_description += f"Primary Keys: {', '.join(info['primary_keys'])}\n"
-        if info.get('foreign_key_candidates'):
-            schema_description += f"Foreign Key Candidates: {', '.join(info['foreign_key_candidates'])}\n"
-        if info.get('time_columns'):
-            schema_description += f"Time Columns: {', '.join(info['time_columns'])}\n"
-        
         schema_description += "COLUMNS:\n"
         for col in info['columns']:
             schema_description += f"  • {col['name']} ({col['type']})"
             if col.get('distinct_count'):
                 schema_description += f" - {col['distinct_count']} distinct values"
             if col.get('sample_values'):
-                schema_description += f" - Examples: {', '.join(col['sample_values'][:3])}"
-            if col.get('stats') and col['stats']:
-                stats = col['stats']
-                schema_description += f" - Range: [{stats.get('min')} to {stats.get('max')}]"
+                schema_description += f" - Examples: {', '.join(str(v) for v in col['sample_values'][:3])}"
             schema_description += "\n"
         schema_description += "\n"
     
-    # Check if file analysis with joins is available
-    file_analysis = st.session_state.get('last_file_analysis', {})
-    suggested_joins = file_analysis.get('joins', [])
-    
-    join_context = ""
-    if suggested_joins:
-        join_context = "\n\nSUGGESTED JOINS FROM ANALYSIS:\n"
-        for join in suggested_joins:
-            join_context += f"- {join['left']} JOIN {join['right']} ON {join['left_column']} = {join['right_column']} ({join['confidence']} confidence)\n"
-            join_context += f"  Reasoning: {join['reasoning']}\n"
-    
-    planning_prompt = f"""You are a data analysis query planner with schema intelligence. Analyze the user's question and create a detailed execution plan.
+    planning_prompt = f"""You are a query planner. Analyze the user's question and create a multi-query execution plan.
 
-    SCHEMA WITH INTELLIGENCE:
+    SCHEMA:
     {schema_description}
-    {join_context}
 
     USER QUESTION: {question}
 
-    PLANNING GUIDELINES BASED ON DATASET ROLES:
-    - FACT tables: Use for aggregations (SUM, COUNT, AVG), metrics analysis
-    - DIMENSION tables: Use for filtering, grouping, categorical breakdowns
-    - LOOKUP tables: Use for reference data, category names
+    RULES:
+    - Determine if the question requires 1 or multiple queries
+    - Each query must serve a specific purpose
+    - Queries can depend on others (specify dependencies)
+    - Use ONLY tables and columns that exist in the schema
+    - Do NOT invent columns, tables, or data
 
-    Create a JSON execution plan with this EXACT structure:
+    Output MUST be valid JSON with this EXACT structure:
     {{
-        "query_type": "aggregation|filter|join|simple_select|ranking|time_series",
-        "primary_table": "table_name",
-        "primary_table_role": "fact|dimension|lookup",
-        "secondary_tables": ["table2", "table3"],
-        "required_columns": [
-            {{"table": "table_name", "column": "col_name", "purpose": "grouping|filtering|aggregation|ordering|selection"}}
-        ],
-        "filters": [
-            {{"column": "col_name", "operator": "=|>|<|LIKE|IN", "value": "filter_value", "reasoning": "why this filter"}}
-        ],
-        "aggregations": [
+    "queries": [
+        {{
+        "id": "q1",
+        "purpose": "describe what this query computes",
+        "depends_on": [],
+        "plan": {{
+            "query_type": "aggregation|filter|join|simple_select|ranking",
+            "primary_table": "table_name",
+            "secondary_tables": [],
+            "required_columns": [
+            {{"table": "table_name", "column": "col_name", "purpose": "grouping|filtering|aggregation"}}
+            ],
+            "filters": [
+            {{"column": "col_name", "operator": "=|>|<|LIKE|IN", "value": "value"}}
+            ],
+            "aggregations": [
             {{"function": "COUNT|SUM|AVG|MIN|MAX", "column": "col_name", "alias": "result_name"}}
-        ],
-        "grouping": ["col1", "col2"],
-        "ordering": [
-            {{"column": "col_name", "direction": "ASC|DESC", "reasoning": "why this order"}}
-        ],
-        "limit": 50,
-        "joins": [
-            {{"left_table": "table1", "right_table": "table2", "left_key": "col1", "right_key": "col2", "type": "INNER|LEFT", "confidence": "high|medium|low"}}
-        ],
-        "reasoning": "explain the query strategy considering dataset roles and relationships",
-        "potential_issues": ["list any data quality or ambiguity concerns"]
+            ],
+            "grouping": ["col1"],
+            "ordering": [
+            {{"column": "col_name", "direction": "ASC|DESC"}}
+            ],
+            "limit": 50,
+            "joins": [
+            {{"left_table": "table1", "right_table": "table2", "left_key": "col1", "right_key": "col2", "type": "INNER|LEFT"}}
+            ]
+        }}
+        }},
+        "note" : ["any warning and note to avoid syntax errors for DuckDB queries]
+    ]
     }}
-
-    CRITICAL RULES FOR JOINS:
-    - If suggested joins are provided above, USE THEM EXACTLY as specified
-    - Only include joins where columns actually exist in both tables
-    - Verify column names match the schema exactly
-    - Do NOT invent joins not supported by the schema
-    - If no valid join exists, leave joins array empty
 
     OUTPUT (valid JSON only, no markdown):"""
     
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     response = model.generate_content(
         planning_prompt,
@@ -676,86 +663,98 @@ def create_query_plan(question: str, schema_info: dict, api_key: str) -> dict:
             response_mime_type="application/json"
         )
     )
-    
     plan_text = response.text.strip()
-    
-    # Clean up markdown if present
     if "```json" in plan_text:
         plan_text = plan_text.split("```json")[1].split("```")[0].strip()
     elif "```" in plan_text:
         plan_text = plan_text.split("```")[1].split("```")[0].strip()
     
     import json
-    query_plan = json.loads(plan_text)
+    multi_query_plan = json.loads(plan_text)
     
-    return query_plan
+    return multi_query_plan
 
-def generate_sql_from_plan(query_plan: dict, schema_info: dict, api_key: str) -> str:
-    """Generate precise SQL query strictly following the execution plan"""
+def generate_strict_sql_from_plan(single_query_plan: dict, schema_info: dict, api_key: str) -> str:
+    """Generate SQL that EXACTLY follows the single query plan"""
     import google.generativeai as genai
     
     genai.configure(api_key=api_key)
     
-    # Build focused schema with only relevant tables
-    relevant_tables = [query_plan['primary_table']] + query_plan.get('secondary_tables', [])
+    # Build focused schema
+    relevant_tables = [single_query_plan['primary_table']] + single_query_plan.get('secondary_tables', [])
     
-    focused_schema = "RELEVANT SCHEMA:\n\n"
+    focused_schema = "SCHEMA:\n\n"
     for table_name in relevant_tables:
         if table_name in schema_info:
             info = schema_info[table_name]
-            focused_schema += f"Table: {table_name} ({info['row_count']} rows)\n"
-            focused_schema += f"Role: {info.get('dataset_role', 'unknown')}\n"
+            focused_schema += f"Table: {table_name}\n"
             focused_schema += "Columns:\n"
             for col in info['columns']:
                 focused_schema += f"  - {col['name']} {col['type']}\n"
             focused_schema += "\n"
     
     import json
-    plan_str = json.dumps(query_plan, indent=2)
+    plan_str = json.dumps(single_query_plan, indent=2)
     
-    sql_generation_prompt = f"""You are a SQL code generator. Generate ONLY the SQL query following this execution plan EXACTLY.
-
-    SCHEMA:
+    sql_prompt = f"""Generate ONLY valid DUCKDB SQL query that EXACTLY implements this plan.
+    **Be extra cautious of duckdb syntax and do not cause errors**
     {focused_schema}
 
     EXECUTION PLAN:
     {plan_str}
+    Create as simple and straight-forward query as you can to avoid unexpected errors.
+    STRICT RULES:
+    1. Use ONLY the tables, columns, filters, aggregations, joins, grouping, and ordering specified in the plan
+    2. Do NOT add any joins not in the plan
+    3. Do NOT add any filters not in the plan
+    4. Do NOT add any aggregations not in the plan
+    5. Use exact column names from the schema
+    6. Output ONLY valid DuckDB SQL - no markdown, no comments, no explanations
 
-    CRITICAL RULES:
-    1. Follow the execution plan EXACTLY - use specified tables, columns, aggregations, filters, joins, grouping, and ordering
-    2. Output ONLY valid DuckDB SQL - no markdown, no comments, no explanations
-    3. Use exact table and column names from the schema
-    4. For JOINS:
-    - Use ONLY the joins specified in the plan
-    - Use EXACT column names from left_key and right_key
-    - Do NOT infer or invent joins not in the plan
-    - If no joins in plan, do NOT add any JOIN clauses
-    5. If limit is specified in plan, use LIMIT clause
-    6. For aggregations, use the specified function and alias
-    7. Apply all filters from the plan using the specified operators
-    8. Include GROUP BY if grouping is specified
-    9. Include ORDER BY if ordering is specified
-    10. Ensure query returns meaningful, summarized results (not raw dumps)
+    Your top priority is **robust execution without runtime errors**.
+    You are a **DuckDB SQL expert** generating queries on user data.
 
-    EXAMPLE JOIN SYNTAX (only if specified in plan):
-    SELECT ...
-    FROM table1 t1
-    INNER JOIN table2 t2 ON t1.column_name = t2.column_name
+    **STRICT RULES (must always follow):**
+    2. If a column may contain non-date strings (e.g. `""`, `"NA"`, `"null"`, empty strings), you MUST:
+    1. **Never directly CAST or STRPTIME a column** unless it is guaranteed to be clean.
+        * Use `TRY_STRPTIME()` or `TRY_CAST()`
+        * OR clean values first using `CASE WHEN` / `NULLIF`
+    3. **Always assume date/time columns are strings** unless schema explicitly says otherwise.
+    4. Before parsing dates, **filter or normalize invalid values**:
+        * `NULLIF(column, '')`
+        * `NULLIF(column, '')`
+        * `LOWER(column) NOT IN ('unassigned','na','null')`
+    5. **Never allow a query to fail due to parsing errors.**
+        * Invalid values must become `NULL`, not exceptions.
+    6. If date parsing is required, use this pattern:
+    TRY_STRPTIME(
+    NULLIF(column_name, ''),
+    '%m/%d/%Y %I:%M%p'
+    )
+    7. For numeric fields that may contain text:
+    TRY_CAST(NULLIF(column_name, '') AS DOUBLE)
+    8. If a column is used in `WHERE`, `GROUP BY`, or `ORDER BY`, ensure the cleaned/parsed version is used consistently.
+    9. If multiple date formats are possible, prefer:
+    COALESCE(
+    TRY_STRPTIME(col, format1),
+    TRY_STRPTIME(col, format2)
+    )
+    10. If safe parsing is not possible, **avoid using the column** and still return a valid query.
 
-    OUTPUT (SQL query only):"""
+    **GOAL:**
+    Generate DuckDB SQL that **never crashes**, even with dirty, mixed-type, or unexpected values.
+
+    **Output ONLY valid DuckDB SQL. No explanations.**:"""
     
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     response = model.generate_content(
-        sql_generation_prompt,
+        sql_prompt,
         generation_config=genai.types.GenerationConfig(
             temperature=0.0
         )
     )
-    
     sql_query = response.text.strip()
-    
-    # Clean up markdown if present
     if "```sql" in sql_query:
         sql_query = sql_query.split("```sql")[1].split("```")[0].strip()
     elif "```" in sql_query:
@@ -763,66 +762,68 @@ def generate_sql_from_plan(query_plan: dict, schema_info: dict, api_key: str) ->
     
     return sql_query
 
-def validate_and_fix_query(sql_query: str, query_plan: dict, schema_info: dict, api_key: str) -> str:
-    """Validate query against plan and fix any issues"""
+def fix_sql_syntax_only(conn, sql_query: str, error_message: str, schema_info: dict, api_key: str) -> str:
+    """Fix ONLY syntax errors - cannot change query logic or intent"""
     import google.generativeai as genai
-    import json
     
     genai.configure(api_key=api_key)
     
-    plan_str = json.dumps(query_plan, indent=2)
+    schema_description = "Available tables and columns:\n\n"
+    for table_name, info in schema_info.items():
+        schema_description += f"Table: {table_name}\n"
+        for col in info['columns']:
+            schema_description += f"  - {col['name']} ({col['type']})\n"
+        schema_description += "\n"
     
-    validation_prompt = f"""You are a SQL validator. Check if this query correctly implements the execution plan.
+    fix_prompt = f"""Fix ONLY the syntax error in this DuckDB SQL query.
 
-        EXECUTION PLAN:
-        {plan_str}
+    SCHEMA:
+    {schema_description}
 
-        GENERATED QUERY:
-        {sql_query}
+    CURRENT QUERY:
+    {sql_query}
 
-        Check for:
-        1. Are all required columns from the plan included?
-        2. Are aggregations correct?
-        3. Are filters applied properly?
-        4. Is grouping correct?
-        5. Is ordering correct?
-        6. Are joins correct?
+    ERROR:
+    {error_message}
 
-        If the query is correct, output: VALID
-        If there are issues, output the CORRECTED query (SQL only, no explanation).
+    ALLOWED FIXES ONLY:
+    - Fix column name typos (match exact schema names)
+    - Fix table name typos
+    - Add missing GROUP BY for aggregations
+    - Fix DuckDB syntax errors
+    - Fix quote issues
 
-        OUTPUT:"""
+    FORBIDDEN:
+    - Do NOT change query logic
+    - Do NOT add/remove joins
+    - Do NOT add/remove filters
+    - Do NOT add/remove aggregations
+    - Do NOT change the intent
+
+    OUTPUT (corrected SQL only, no markdown):"""
     
     model = genai.GenerativeModel('gemini-2.5-flash')
-    
     response = model.generate_content(
-        validation_prompt,
+        fix_prompt,
         generation_config=genai.types.GenerationConfig(
-            temperature=0.0
+            temperature=0.1
         )
     )
     
-    result = response.text.strip()
+    fixed_query = response.text.strip()
     
-    if result == "VALID" or "VALID" in result:
-        return sql_query
+    if "```sql" in fixed_query:
+        fixed_query = fixed_query.split("```sql")[1].split("```")[0].strip()
+    elif "```" in fixed_query:
+        fixed_query = fixed_query.split("```")[1].split("```")[0].strip()
     
-    # Clean up corrected query
-    corrected = result
-    if "```sql" in corrected:
-        corrected = corrected.split("```sql")[1].split("```")[0].strip()
-    elif "```" in corrected:
-        corrected = corrected.split("```")[1].split("```")[0].strip()
-    
-    return corrected
+    return fixed_query
 
-def execute_sql_with_retry(conn, sql_query: str, schema_info: dict, api_key: str, max_retries: int = 3):
-    """Execute SQL query with retry mechanism using LLM to fix errors"""
+def execute_single_query_with_retry(conn, sql_query: str, schema_info: dict, api_key: str, max_retries: int = 3):
+    """Execute single SQL query with syntax-only retry"""
     import pandas as pd
-    import google.generativeai as genai
     
     current_query = sql_query
-    error_history = []
     
     for attempt in range(max_retries):
         try:
@@ -831,191 +832,178 @@ def execute_sql_with_retry(conn, sql_query: str, schema_info: dict, api_key: str
         
         except Exception as e:
             error_message = str(e)
-            error_history.append({"query": current_query, "error": error_message})
             
             if attempt == max_retries - 1:
-                # Last attempt failed
-                return pd.DataFrame(), f"Query failed after {max_retries} attempts. Last error: {error_message}", current_query
+                return pd.DataFrame(), f"Query failed after {max_retries} attempts: {error_message}", current_query
             
-            # Try to fix the query using LLM with error history
-            genai.configure(api_key=api_key)
-            
-            schema_description = "Available tables and columns:\n\n"
-            for table_name, info in schema_info.items():
-                schema_description += f"Table: {table_name}\n"
-                for col in info['columns']:
-                    schema_description += f"  - {col['name']} ({col['type']})\n"
-                schema_description += "\n"
-            
-            error_context = "\n".join([
-                f"Attempt {i+1}: {err['error']}" 
-                for i, err in enumerate(error_history)
-            ])
-            
-            fix_prompt = f"""Fix this DuckDB SQL query. Previous attempts have failed.
-
-        SCHEMA:
-        {schema_description}
-
-        CURRENT QUERY:
-        {current_query}
-
-        ERROR HISTORY:
-        {error_context}
-
-        LATEST ERROR:
-        {error_message}
-
-        Common fixes:
-        - Check column names match schema exactly
-        - Ensure aggregations use GROUP BY
-        - Verify table names are correct
-        - Use proper DuckDB syntax
-
-        OUTPUT (corrected SQL only, no markdown):"""
-            
-            model = genai.GenerativeModel('gemini-2.5-flash')
-            response = model.generate_content(
-                fix_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.2
-                )
-            )
-            
-            fixed_query = response.text.strip()
-            
-            # Clean up markdown
-            if "```sql" in fixed_query:
-                fixed_query = fixed_query.split("```sql")[1].split("```")[0].strip()
-            elif "```" in fixed_query:
-                fixed_query = fixed_query.split("```")[1].split("```")[0].strip()
-            
-            current_query = fixed_query
+            # Try to fix syntax only
+            current_query = fix_sql_syntax_only(conn, current_query, error_message, schema_info, api_key)
     
     return pd.DataFrame(), "Query execution failed", current_query
 
-def execute_smart_query(question: str, conn, schema_info: dict, api_key: str):
-    """Main function to execute smart query with planning"""
-    try:
-        # Step 1: Create execution plan
-        st.info("🧠 Creating query execution plan...")
-        query_plan = create_query_plan(question, schema_info, api_key)
+def execute_multi_query_plan(multi_plan: dict, conn, schema_info: dict, api_key: str):
+    """Execute all queries in the multi-query plan"""
+    import pandas as pd
+    
+    query_results = {}
+    executed_queries = {}
+    
+    # Sort queries by dependencies
+    queries = multi_plan['queries']
+    executed_ids = set()
+    
+    while len(executed_ids) < len(queries):
+        progress_made = False
         
-        # Display plan to user
-        with st.expander("📋 Query Execution Plan", expanded=False):
-            st.json(query_plan)
+        for query_obj in queries:
+            query_id = query_obj['id']
+            
+            if query_id in executed_ids:
+                continue
+            
+            # Check if dependencies are satisfied
+            depends_on = query_obj.get('depends_on', [])
+            if all(dep_id in executed_ids for dep_id in depends_on):
+                # Execute this query
+                
+                sql_query = generate_strict_sql_from_plan(query_obj['plan'], schema_info, api_key)
+                
+                
+                result_df, error, final_query = execute_single_query_with_retry(
+                    conn, sql_query, schema_info, api_key, max_retries=3
+                )
+                
+                if error:
+                    return None, f"Query {query_id} failed: {error}", None
+                
+                query_results[query_id] = result_df
+                executed_queries[query_id] = final_query
+                executed_ids.add(query_id)
+                progress_made = True
         
-        # Step 2: Generate SQL from plan
-        st.info("⚙️ Generating SQL query...")
-        sql_query = generate_sql_from_plan(query_plan, schema_info, api_key)
-        
-        # Step 3: Validate and fix if needed
-        st.info("✅ Validating query...")
-        validated_query = validate_and_fix_query(sql_query, query_plan, schema_info, api_key)
-        
-        # Display query
-        st.code(validated_query, language="sql")
-        
-        # Step 4: Execute with retry
-        st.info("🔄 Executing query...")
-        result_df, error, final_query = execute_sql_with_retry(
-            conn, validated_query, schema_info, api_key, max_retries=3
-        )
-        
-        if error:
-            st.error(f"Execution failed: {error}")
-            st.code(final_query, language="sql")
-            return None, None
-        print(result_df)
-        return result_df, query_plan
-        
-    except Exception as e:
-        st.error(f"Smart query execution failed: {str(e)}")
-        return None, None
+        if not progress_made:
+            return None, "Circular dependency detected in query plan", None
+    
+    return query_results, None, executed_queries
 
-def generate_result_explanation(question: str, result_df, query_plan: dict, api_key: str) -> str:
-    """Generate business-friendly explanation with multi-file context"""
+def generate_final_explanation(question: str, query_results: dict, multi_plan: dict, api_key: str) -> str:
+    """Generate explanation strictly based on actual query results"""
     import google.generativeai as genai
     
     genai.configure(api_key=api_key)
     
-    # Limit result preview to 20 rows
-    result_preview = result_df.head(20)
-    
-    if result_df.empty:
-        result_text = "No results found."
-    else:
-        result_text = f"Results ({len(result_df)} total rows):\n\n"
-        result_text += result_preview.to_string(index=False)
+    # Build results context
+    results_text = ""
+    for query_id, df in query_results.items():
+        query_obj = next(q for q in multi_plan['queries'] if q['id'] == query_id)
+        purpose = query_obj['purpose']
         
-        if len(result_df) > 20:
-            result_text += f"\n\n... and {len(result_df) - 20} more rows"
-    
-    # Extract multi-dataset context from query plan
-    multi_dataset_context = ""
-    if query_plan:
-        primary_table = query_plan.get('primary_table', 'unknown')
-        primary_role = query_plan.get('primary_table_role', 'unknown')
-        secondary_tables = query_plan.get('secondary_tables', [])
-        joins = query_plan.get('joins', [])
+        results_text += f"\n\n{query_id} - {purpose}:\n"
         
-        if secondary_tables or joins:
-            multi_dataset_context = f"\n\nMULTI-DATASET CONTEXT:\n"
-            multi_dataset_context += f"Primary table: {primary_table} (role: {primary_role})\n"
-            if secondary_tables:
-                multi_dataset_context += f"Secondary tables: {', '.join(secondary_tables)}\n"
-            if joins:
-                multi_dataset_context += "Relationships used:\n"
-                for join in joins:
-                    multi_dataset_context += f"  - {join['left_table']}.{join['left_key']} ↔ {join['right_table']}.{join['right_key']}\n"
+        if df.empty:
+            results_text += "No results\n"
+        else:
+            results_text += f"({len(df)} rows)\n"
+            results_text += df.head(20).to_string(index=False)
+            if len(df) > 20:
+                results_text += f"\n... and {len(df) - 20} more rows"
     
-    prompt = f"""**ROLE:**
-    You are a senior business analyst with strong data interpretation skills. Your task is to translate raw query results into clear, actionable business insights for non-technical stakeholders.
+    final_reasoning = multi_plan.get('final_reasoning', '')
+    
+    prompt = f"""
 
-    **USER QUESTION:**
-    {question}
+        **ROLE**
+        You are a **senior data analyst**. Provide a **clear, concise, business-focused explanation** using **ONLY the actual query results provided**.
 
-    **QUERY RESULTS:**
-    {result_text}
-    {multi_dataset_context}
+        ---
 
-    **ANALYSIS INSTRUCTIONS:**
+        ### 📌 USER QUESTION
 
-    * Start by briefly restating what the query was intended to answer (in plain business terms).
-    * If multiple datasets were used, explain how they were combined and what relationships were leveraged.
-    * Clearly explain what the data shows, including key metrics, totals, trends, or comparisons visible in the results.
-    * Identify notable patterns, outliers, or relationships *only if they are directly supported by the data*.
-    * If the results include multiple categories, segments, or time periods, compare them explicitly.
-    * Quantify insights wherever possible (percentages, differences, rankings), using only the provided data.
-    * If the data is incomplete, sparse, or inconclusive, explicitly state this instead of speculating.
-    * Avoid technical SQL or database terminology unless necessary.
+        ```
+        {question}
+        ```
 
-    **STRICT CONSTRAINTS:**
+        ---
 
-    * Do NOT make assumptions beyond the provided results.
-    * Do NOT infer causes, forecasts, or recommendations unless they are explicitly supported by the data.
-    * Do NOT use external knowledge or industry benchmarks.
-    * Do NOT invent missing values or trends.
+        ### 🧠 QUERY PLAN CONTEXT (FOR UNDERSTANDING ONLY)
 
-    **OUTPUT FORMAT:**
+        ```
+        {final_reasoning}
+        ```
 
-    * **Summary:** 1–2 sentences explaining the overall outcome
-    * **Key Insights:** Bullet points highlighting the most important observations
-    * **Data Relationships:** (if multi-dataset) Briefly explain how datasets were combined and what this reveals
-    * **Business Interpretation:** What these results mean for the business, strictly based on the data
-    * **Recommendations:** Business insights with recommendations for improvements and growth
+        > This is intent context only. **Do NOT use it to infer, assume, or add information.**
 
-    **FINAL EXPLANATION:**"""
+        ---
+
+        ### 📊 ACTUAL QUERY RESULTS (SOURCE OF TRUTH)
+
+        ```
+        {results_text}
+        ```
+
+        ---
+
+        ## 🚫 STRICT RULES (MANDATORY)
+
+        * Base your response **ONLY** on `ACTUAL QUERY RESULTS`
+        * **Do NOT**:
+
+        * Infer trends, causes, or correlations
+        * Assume missing values or external context
+        * Add domain knowledge not present in results
+        * Hallucinate metrics, percentages, or comparisons
+        * Every insight **MUST reference explicit values** from the results
+        * Quantify insights **only if numbers are present**
+        * If results are:
+        * **Empty** → state that clearly, ask the user to retry
+        * No recommendations unless directly supported by data
+
+        ---
+
+        ## 📐 ANALYSIS RULES
+
+        * Use exact numbers, labels, and categories as shown
+        * Comparisons are allowed **only if both values exist**
+        * No speculation, no storytelling
+
+        ---
+
+        ## 🧾 OUTPUT FORMAT (SHORT & STYLED — MANDATORY)
+
+        ###  Analysis Summary
+
+        1–2 lines stating exactly what the data shows, using only visible values.
+
+        ###  Key Findings
+
+        * Bullet points with explicit numbers or categories
+        * Format: Metric / Category → Value
+
+        ###  Business Meaning
+
+        * 1 short paragraph explaining what this data indicates
+        * If interpretation is not possible:
+        Business Strategies, Recommendations, Outcomes
+
+
+        ---
+
+        ### 📝 FINAL INSTRUCTION
+
+        Respond **only** in the format above.
+        Do not add commentary, assumptions, or extra sections.
+
+        """
     
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     response = model.generate_content(
         prompt,
         generation_config=genai.types.GenerationConfig(
-            temperature=0.3
+            temperature=0.2
         )
     )
-    
+    print(response.text.strip())
     return response.text.strip()
 
 def df_to_gemini_payload(df, max_rows=200):
@@ -1056,13 +1044,181 @@ def generate_ai_plot_from_result(
     {user_question}
 
     DATA (JSON):
-    {json.dumps(payload)}
+    {json.dumps(make_json_safe(payload))}
 
+    **NEVER REPLY WITH PLOT JSON**
+    in case of no data just response with data json, do not generate plots
     OUTPUT FORMAT:
-    - One or more charts
+    - One or more chart image
     - Followed by a concise insight message
     """
 
     response = model.generate_content(prompt)
 
     return response
+
+def create_pdf_report(user_question, explanation, result_df, ai_plot_response=None):
+    """Generate a PDF report with markdown formatting and images"""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, 
+        pagesize=letter, 
+        topMargin=0.5*inch, 
+        bottomMargin=0.5*inch,
+        leftMargin=0.75*inch,
+        rightMargin=0.75*inch
+    )
+    story = []
+    styles = getSampleStyleSheet()
+    
+    # Custom styles with word wrapping
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        textColor='#1f77b4',
+        spaceAfter=12,
+        alignment=TA_CENTER,
+        wordWrap='CJK'
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='#2c3e50',
+        spaceAfter=10,
+        spaceBefore=10,
+        wordWrap='CJK'
+    )
+    
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        wordWrap='CJK',
+        spaceBefore=6,
+        spaceAfter=6
+    )
+    
+    bullet_style = ParagraphStyle(
+        'CustomBullet',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        leftIndent=20,
+        wordWrap='CJK',
+        spaceBefore=3,
+        spaceAfter=3
+    )
+    
+    # Title
+    story.append(Paragraph("AI Analytics Report", title_style))
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Question
+    story.append(Paragraph("<b>Question:</b>", heading_style))
+    story.append(Paragraph(user_question, normal_style))
+    story.append(Spacer(1, 0.2*inch))
+    
+    # Add visualizations if present
+    if ai_plot_response:
+        story.append(Paragraph("<b>Visualizations:</b>", heading_style))
+        temp_files = []
+        for part in ai_plot_response.candidates[0].content.parts:
+            if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
+                try:
+                    # Get the raw bytes data
+                    img_data = part.inline_data.data
+                    
+                    # If it's a string, it might be base64 encoded
+                    if isinstance(img_data, str):
+                        img_data = base64.b64decode(img_data)
+                    
+                    # Save image to temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.png', mode='wb') as tmp_file:
+                        tmp_file.write(img_data)
+                        img_path = tmp_file.name
+                        temp_files.append(img_path)
+                    
+                    # Verify the file was written correctly
+                    if os.path.getsize(img_path) > 0:
+                        try:
+                            img = RLImage(img_path, width=6*inch, height=4*inch, kind='proportional')
+                            story.append(img)
+                            story.append(Spacer(1, 0.2*inch))
+                        except Exception as img_error:
+                            story.append(Paragraph(f"[Image could not be rendered]", normal_style))
+                            story.append(Spacer(1, 0.2*inch))
+                except Exception as e:
+                    story.append(Paragraph(f"[Error processing image]", normal_style))
+                    story.append(Spacer(1, 0.2*inch))
+        
+        story.append(Spacer(1, 0.1*inch))
+    
+    # Explanation (convert markdown to PDF-friendly format)
+    story.append(Paragraph("<b>Analysis:</b>", heading_style))
+    
+    # Process the explanation text line by line to preserve formatting
+    try:
+        # Split explanation into lines
+        lines = explanation.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                story.append(Spacer(1, 0.05*inch))
+                continue
+            
+            # Check if it's a header (starts with ###, ##, or #)
+            if line.startswith('###'):
+                text = line.replace('###', '').strip()
+                story.append(Paragraph(f"<b>{text}</b>", styles['Heading3']))
+            elif line.startswith('##'):
+                text = line.replace('##', '').strip()
+                story.append(Paragraph(f"<b>{text}</b>", heading_style))
+            elif line.startswith('#'):
+                text = line.replace('#', '').strip()
+                story.append(Paragraph(f"<b>{text}</b>", heading_style))
+            # Check if it's a bullet point
+            elif line.startswith('*') or line.startswith('-') or line.startswith('•'):
+                text = line.lstrip('*-• ').strip()
+                story.append(Paragraph(f"• {text}", bullet_style))
+            # Check if it contains bold text
+            elif '**' in line:
+                # Replace markdown bold with HTML bold
+                text = line.replace('**', '<b>', 1).replace('**', '</b>', 1)
+                story.append(Paragraph(text, normal_style))
+            else:
+                story.append(Paragraph(line, normal_style))
+    
+    except Exception as e:
+        # Fallback to raw text if processing fails
+        story.append(Paragraph(explanation, normal_style))
+    
+    # Build PDF
+    try:
+        doc.build(story)
+    except Exception as e:
+        # If PDF build fails, clean up temp files and re-raise
+        if ai_plot_response and 'temp_files' in locals():
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                except:
+                    pass
+        raise e
+    
+    # Clean up temporary image files
+    if ai_plot_response and 'temp_files' in locals():
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except:
+                pass
+    
+    buffer.seek(0)
+    return buffer
