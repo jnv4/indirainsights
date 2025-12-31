@@ -162,7 +162,7 @@ with tab2:
         st.info("Upload at least one dataset to enable the report.")
     else:
         if st.session_state.api_key_configured:
-            print('<div class="success-box">✅ API Key configured successfully!</div>')
+            a=1
         else:
             st.warning("⚠️ GEMINI_API_KEY not found.")
 
@@ -259,7 +259,7 @@ with tab2:
                                 data_context += "\nMissing data (>5%):\n"
                                 for col, pct in significant_missing.items():
                                     data_context += f"- {col}: {pct}% missing\n"
-                        print(data_context)
+                        
                         with st.spinner("🤔 Generating insights..."):
                             full_prompt = f"""{SYSTEM_PROMPT}
                             **Your answer should be VERY detailed**
@@ -450,6 +450,189 @@ with tab3:
         else:
             st.info("No custom datasets uploaded yet. Upload files above to get started.")
 
+# Add these imports at the top of your file
+import streamlit as st
+import pandas as pd
+import json
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER
+from io import BytesIO
+import base64
+from markdown import markdown
+from bs4 import BeautifulSoup
+import tempfile
+import os
+
+def create_pdf_report(user_question, explanation, result_df, ai_plot_response=None):
+    """Generate a PDF report with markdown formatting and images"""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, 
+        pagesize=letter, 
+        topMargin=0.5*inch, 
+        bottomMargin=0.5*inch,
+        leftMargin=0.75*inch,
+        rightMargin=0.75*inch
+    )
+    story = []
+    styles = getSampleStyleSheet()
+    
+    # Custom styles with word wrapping
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        textColor='#1f77b4',
+        spaceAfter=12,
+        alignment=TA_CENTER,
+        wordWrap='CJK'
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor='#2c3e50',
+        spaceAfter=10,
+        spaceBefore=10,
+        wordWrap='CJK'
+    )
+    
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        wordWrap='CJK',
+        spaceBefore=6,
+        spaceAfter=6
+    )
+    
+    bullet_style = ParagraphStyle(
+        'CustomBullet',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        leftIndent=20,
+        wordWrap='CJK',
+        spaceBefore=3,
+        spaceAfter=3
+    )
+    
+    # Title
+    story.append(Paragraph("AI Analytics Report", title_style))
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Question
+    story.append(Paragraph("<b>Question:</b>", heading_style))
+    story.append(Paragraph(user_question, normal_style))
+    story.append(Spacer(1, 0.2*inch))
+    
+    # Add visualizations if present
+    if ai_plot_response:
+        story.append(Paragraph("<b>Visualizations:</b>", heading_style))
+        temp_files = []
+        for part in ai_plot_response.candidates[0].content.parts:
+            if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
+                try:
+                    # Get the raw bytes data
+                    img_data = part.inline_data.data
+                    
+                    # If it's a string, it might be base64 encoded
+                    if isinstance(img_data, str):
+                        img_data = base64.b64decode(img_data)
+                    
+                    # Save image to temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.png', mode='wb') as tmp_file:
+                        tmp_file.write(img_data)
+                        img_path = tmp_file.name
+                        temp_files.append(img_path)
+                    
+                    # Verify the file was written correctly
+                    if os.path.getsize(img_path) > 0:
+                        try:
+                            img = RLImage(img_path, width=6*inch, height=4*inch, kind='proportional')
+                            story.append(img)
+                            story.append(Spacer(1, 0.2*inch))
+                        except Exception as img_error:
+                            story.append(Paragraph(f"[Image could not be rendered]", normal_style))
+                            story.append(Spacer(1, 0.2*inch))
+                except Exception as e:
+                    story.append(Paragraph(f"[Error processing image]", normal_style))
+                    story.append(Spacer(1, 0.2*inch))
+        
+        story.append(Spacer(1, 0.1*inch))
+    
+    # Explanation (convert markdown to PDF-friendly format)
+    story.append(Paragraph("<b>Analysis:</b>", heading_style))
+    
+    # Process the explanation text line by line to preserve formatting
+    try:
+        # Split explanation into lines
+        lines = explanation.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                story.append(Spacer(1, 0.05*inch))
+                continue
+            
+            # Check if it's a header (starts with ###, ##, or #)
+            if line.startswith('###'):
+                text = line.replace('###', '').strip()
+                story.append(Paragraph(f"<b>{text}</b>", styles['Heading3']))
+            elif line.startswith('##'):
+                text = line.replace('##', '').strip()
+                story.append(Paragraph(f"<b>{text}</b>", heading_style))
+            elif line.startswith('#'):
+                text = line.replace('#', '').strip()
+                story.append(Paragraph(f"<b>{text}</b>", heading_style))
+            # Check if it's a bullet point
+            elif line.startswith('*') or line.startswith('-') or line.startswith('•'):
+                text = line.lstrip('*-• ').strip()
+                story.append(Paragraph(f"• {text}", bullet_style))
+            # Check if it contains bold text
+            elif '**' in line:
+                # Replace markdown bold with HTML bold
+                text = line.replace('**', '<b>', 1).replace('**', '</b>', 1)
+                story.append(Paragraph(text, normal_style))
+            else:
+                story.append(Paragraph(line, normal_style))
+    
+    except Exception as e:
+        # Fallback to raw text if processing fails
+        story.append(Paragraph(explanation, normal_style))
+    
+    # Build PDF
+    try:
+        doc.build(story)
+    except Exception as e:
+        # If PDF build fails, clean up temp files and re-raise
+        if ai_plot_response and 'temp_files' in locals():
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                except:
+                    pass
+        raise e
+    
+    # Clean up temporary image files
+    if ai_plot_response and 'temp_files' in locals():
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except:
+                pass
+    
+    buffer.seek(0)
+    return buffer
+
+# Tab4 code
 with tab4:
     st.markdown("## 🔍 AI Analytics")
     st.markdown("Ask natural language questions and get answers based on your data using intelligent query planning.")
@@ -524,6 +707,7 @@ with tab4:
                                 st.code(final_query, language="sql")
                             st.info("💡 Try rephrasing your question or check if the column/table names are correct.")
                             st.stop()
+                        print(result_df)
                         
                         # Step 6: Generate AI explanation
                         with st.spinner("💡 Generating intelligent explanation..."):
@@ -533,6 +717,8 @@ with tab4:
                                 query_plan,
                                 st.session_state.gemini_api_key
                             )
+                        
+                        ai_plot_response = None
                         if show_visuals==True:
                             from utils import generate_ai_plot_from_result
                             # Generate AI plots + insights
@@ -548,12 +734,40 @@ with tab4:
                                         st.image(part.inline_data.data)
                                     elif hasattr(part, "text"):
                                         st.markdown(part.text)
+                        
                         st.markdown(explanation)
-                    except json.JSONDecodeError as e:
-                        st.error(f"❌ Error parsing query plan: {str(e)}")
-                        st.info("The AI had trouble creating a structured plan. Try rephrasing your question.")
-                        with st.expander("🔍 Debug Info"):
-                            st.code(str(e))
+                        
+                        # Store the results in session state to prevent disappearing
+                        if 'pdf_data' not in st.session_state:
+                            st.session_state.pdf_data = {}
+                        
+                        # Generate PDF download button
+                        st.markdown("---")
+                        
+                        try:
+                            with st.spinner("📄 Preparing PDF report..."):
+                                pdf_buffer = create_pdf_report(
+                                    user_question, 
+                                    explanation, 
+                                    result_df,
+                                    ai_plot_response if show_visuals else None
+                                )
+                                
+                                # Store PDF data in session state
+                                st.session_state.pdf_data['buffer'] = pdf_buffer.getvalue()
+                                st.session_state.pdf_data['filename'] = f"ai_analytics_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                            
+                            st.download_button(
+                                label="📄 Download PDF Report",
+                                data=st.session_state.pdf_data['buffer'],
+                                file_name=st.session_state.pdf_data['filename'],
+                                mime="application/pdf",
+                                type="secondary",
+                                use_container_width=True
+                            )
+                        except Exception as pdf_error:
+                            st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
+                            st.info("You can still view the results above.")
                     
                     except Exception as e:
                         st.error(f"❌ Unexpected Error: {str(e)}")
@@ -561,3 +775,4 @@ with tab4:
                         import traceback
                         with st.expander("🔍 Debug Info"):
                             st.code(traceback.format_exc())
+                            

@@ -12,9 +12,7 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-# Supabase Configuration
 load_dotenv()
-# Define the 4 fields
 AVAILABLE_FIELDS = ["Call Center", "Website", "CRM", "Competitors"]
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -928,7 +926,7 @@ def execute_smart_query(question: str, conn, schema_info: dict, api_key: str):
             st.error(f"Execution failed: {error}")
             st.code(final_query, language="sql")
             return None, None
-        
+        print(result_df)
         return result_df, query_plan
         
     except Exception as e:
@@ -1027,11 +1025,12 @@ def df_to_gemini_payload(df, max_rows=200):
         "rows": df_sample.values.tolist(),
         "row_count": len(df)
     }
+
 def generate_ai_plot_from_result(
-    df,
-    user_question,
-    api_key
-):
+        df,
+        user_question,
+        api_key
+    ):
     genai.configure(api_key=api_key)
 
     model = genai.GenerativeModel("gemini-3-pro-image-preview")
@@ -1062,7 +1061,7 @@ def generate_ai_plot_from_result(
     OUTPUT FORMAT:
     - One or more charts
     - Followed by a concise insight message
-"""
+    """
 
     response = model.generate_content(prompt)
 
