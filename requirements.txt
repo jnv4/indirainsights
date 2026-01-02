@@ -6,6 +6,6 @@ tabulate
 dotenv
 supabase
 openpyxl
-reportlab
 markdown
 bs4
+reportlab
