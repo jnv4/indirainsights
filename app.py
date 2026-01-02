@@ -54,6 +54,9 @@ if 'api_key_configured' not in st.session_state:
 
 st.title("📊 Marketing Performance Insights")
 
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = 0
+
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Dashboard", "📈AI Report", "📤 Upload Data", "🔍 AI Analytics"])
 with tab1:
     st.sidebar.title("📂 Insights By Field")
@@ -174,10 +177,11 @@ with tab2:
         if st.session_state.api_key_configured:
             from prompts import SYSTEM_PROMPT
             
-            user_query = st.text_area("Your Question", height=120, label_visibility="visible")
-            analyze_btn = st.button("🔍 Analyze", type="primary")
+            user_query = st.text_area("Your Question", height=120, label_visibility="visible", key="tab2_query_input")
+            analyze_btn = st.button("🔍 Analyze", type="primary", key="tab2_analyze_btn")
             
             if analyze_btn and user_query:
+                st.session_state.active_tab = 1
                 st.session_state.tab2_query = user_query
                 st.session_state.tab2_response = None
                 with st.spinner("🧠 Identifying relevant data..."):
@@ -518,17 +522,21 @@ with tab4:
             st.markdown("<br>", unsafe_allow_html=True)
             
             # User input
+            # User input
             user_question = st.text_area(
                 "Ask a question about your data",
-                height=100)
+                height=100,
+                key="tab4_question_input")
             show_visuals = st.checkbox(
                 "📊 Generate visualizations (charts + insights)",
-                value=False
+                value=False,
+                key="tab4_show_visuals"
             )
 
-            generate_btn = st.button("🔍 Generate Answer", type="primary")
+            generate_btn = st.button("🔍 Generate Answer", type="primary", key="tab4_generate_btn")
             
             if generate_btn and user_question:
+                st.session_state.active_tab = 3
                 st.session_state.tab4_question = user_question
                 st.session_state.tab4_explanation = None
                 st.session_state.tab4_plot_response = None

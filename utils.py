@@ -1044,7 +1044,7 @@ def generate_ai_plot_from_result(
 
     OBJECTIVE:
     Analyze the provided tabular data and produce a concise, high-impact visual dashboard that directly answers the user’s question.
-
+    PRIORITIES: **ALWAYS ONLY REPLY WITH IMAGES, NEVER PLAIN TEXT. PLAIN TEXT SHOULD ONLY BE USED IN CASE OF TOTALLY EMPTY DATA**
     TASK FLOW (STRICT ORDER):
     1. Carefully inspect the data schema, column meanings, and value distributions.
     2. Identify what dimensions, metrics, and comparisons are MOST relevant to the user question.
