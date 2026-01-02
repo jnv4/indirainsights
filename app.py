@@ -155,8 +155,13 @@ with tab1:
 with tab2:
     st.markdown("## 🤖 Sales & Market Intelligence Report Bot")
 
+    if 'tab2_response' not in st.session_state:
+        st.session_state.tab2_response = None
+    if 'tab2_query' not in st.session_state:
+        st.session_state.tab2_query = None
+
     if not has_datasets():
-        st.warning("📭 No datasets available")
+        st.warning("🔭 No datasets available")
         st.info("Upload at least one dataset to enable the report.")
     else:
         if st.session_state.api_key_configured:
@@ -173,6 +178,8 @@ with tab2:
             analyze_btn = st.button("🔍 Analyze", type="primary")
             
             if analyze_btn and user_query:
+                st.session_state.tab2_query = user_query
+                st.session_state.tab2_response = None
                 with st.spinner("🧠 Identifying relevant data..."):
                     try:
                         relevant_files = identify_relevant_files(user_query, st.session_state.gemini_api_key)
@@ -180,7 +187,7 @@ with tab2:
                         if not relevant_files:
                             st.warning("No relevant datasets found for this question.")
                         else:
-                            st.info(f"📁 Analyzing: {', '.join(relevant_files)}")
+                            st.info(f"🔍 Analyzing: {', '.join(relevant_files)}")
 
                         relevant_data = {}
                         for file_name in relevant_files:
@@ -284,39 +291,42 @@ with tab2:
                             
                             response = model.generate_content(full_prompt)
 
-                            st.markdown(response.text, unsafe_allow_html=True)
-
-                            st.markdown('</div>', unsafe_allow_html=True)
-
-                            # PDF Download Option
-                            st.markdown("---")
-                            try:
-                                with st.spinner("📄 Preparing PDF report..."):
-                                    pdf_buffer = create_markdown_pdf_report(
-                                        user_query,
-                                        response.text
-                                    )
-                                    
-                                    if 'report_pdf_data' not in st.session_state:
-                                        st.session_state.report_pdf_data = {}
-                                    
-                                    st.session_state.report_pdf_data['buffer'] = pdf_buffer.getvalue()
-                                    st.session_state.report_pdf_data['filename'] = f"market_intelligence_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                                
-                                st.download_button(
-                                    label="📄 Download PDF Report",
-                                    data=st.session_state.report_pdf_data['buffer'],
-                                    file_name=st.session_state.report_pdf_data['filename'],
-                                    mime="application/pdf",
-                                    type="secondary",
-                                    use_container_width=True
-                                )
-                            except Exception as pdf_error:
-                                st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
+                            st.session_state.tab2_response = response.text
                         
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
                         st.info("If this is an API key error, please reconfigure your API key using the 'Change API Key' button above")
+            
+            if st.session_state.tab2_response:
+                st.markdown(st.session_state.tab2_response, unsafe_allow_html=True)
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                # PDF Download Option
+                st.markdown("---")
+                try:
+                    with st.spinner("📄 Preparing PDF report..."):
+                        pdf_buffer = create_markdown_pdf_report(
+                            st.session_state.tab2_query,
+                            st.session_state.tab2_response
+                        )
+                        
+                        if 'report_pdf_data' not in st.session_state:
+                            st.session_state.report_pdf_data = {}
+                        
+                        st.session_state.report_pdf_data['buffer'] = pdf_buffer.getvalue()
+                        st.session_state.report_pdf_data['filename'] = f"market_intelligence_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    
+                    st.download_button(
+                        label="📄 Download PDF Report",
+                        data=st.session_state.report_pdf_data['buffer'],
+                        file_name=st.session_state.report_pdf_data['filename'],
+                        mime="application/pdf",
+                        type="secondary",
+                        use_container_width=True
+                    )
+                except Exception as pdf_error:
+                    st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
 
 with tab3:
     st.markdown("## 📤 Upload Marketing Data")
@@ -475,6 +485,15 @@ with tab4:
     st.markdown("## 🔍 AI Analytics")
     st.markdown("Ask natural language questions and get answers based on your data using intelligent query planning.")
     
+    if 'tab4_explanation' not in st.session_state:
+        st.session_state.tab4_explanation = None
+    if 'tab4_question' not in st.session_state:
+        st.session_state.tab4_question = None
+    if 'tab4_plot_response' not in st.session_state:
+        st.session_state.tab4_plot_response = None
+    if 'tab4_primary_result' not in st.session_state:
+        st.session_state.tab4_primary_result = None
+    
     if not has_datasets():
         st.warning("🔭 No datasets available")
         st.info("Upload at least one dataset to use the SQL Query Generator.")
@@ -510,6 +529,10 @@ with tab4:
             generate_btn = st.button("🔍 Generate Answer", type="primary")
             
             if generate_btn and user_question:
+                st.session_state.tab4_question = user_question
+                st.session_state.tab4_explanation = None
+                st.session_state.tab4_plot_response = None
+                st.session_state.tab4_primary_result = None
                 with st.spinner("🧠 Analyzing your question..."):
                     try:
                         schema_info = extract_duckdb_schema(st.session_state.duckdb_conn)
@@ -550,56 +573,20 @@ with tab4:
                             st.session_state.gemini_api_key
                         )
                         
-                        ai_plot_response = None
+                        st.session_state.tab4_explanation = explanation
+                        st.session_state.tab4_primary_result = list(non_empty_results.values())[0]
+                        
                         if show_visuals:
                             from utils import generate_ai_plot_from_result
                             
-                            primary_result = list(non_empty_results.values())[0]
-                            
                             st.info("📊 Generating visualizations...")
                             ai_plot_response = generate_ai_plot_from_result(
-                                primary_result,
+                                st.session_state.tab4_primary_result,
                                 user_question,
                                 st.session_state.gemini_api_key
                             )
                             
-                            for part in ai_plot_response.candidates[0].content.parts:
-                                if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
-                                    st.image(part.inline_data.data)
-                                elif hasattr(part, "text"):
-                                    st.markdown(part.text)
-                        
-                        st.markdown(explanation)
-                        
-                        if 'pdf_data' not in st.session_state:
-                            st.session_state.pdf_data = {}
-                        
-                        st.markdown("---")
-                        
-                        try:
-                            primary_result = list(non_empty_results.values())[0]
-                            
-                            with st.spinner("📄 Preparing PDF report..."):
-                                pdf_buffer = create_pdf_report(
-                                    user_question,
-                                    explanation,
-                                    primary_result,
-                                    ai_plot_response if show_visuals else None
-                                )
-                                
-                                st.session_state.pdf_data['buffer'] = pdf_buffer.getvalue()
-                                st.session_state.pdf_data['filename'] = f"ai_analytics_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                            
-                            st.download_button(
-                                label="📄 Download PDF Report",
-                                data=st.session_state.pdf_data['buffer'],
-                                file_name=st.session_state.pdf_data['filename'],
-                                mime="application/pdf",
-                                type="secondary",
-                                use_container_width=True
-                            )
-                        except Exception as pdf_error:
-                            st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
+                            st.session_state.tab4_plot_response = ai_plot_response
                         
                         if failed_queries:
                             with st.expander("⚠️ Some queries failed (optional debug)", expanded=False):
@@ -612,3 +599,41 @@ with tab4:
                         import traceback
                         with st.expander("🔍 Debug Info"):
                             st.code(traceback.format_exc())
+            
+            if st.session_state.tab4_explanation:
+                if st.session_state.tab4_plot_response:
+                    for part in st.session_state.tab4_plot_response.candidates[0].content.parts:
+                        if hasattr(part, "inline_data") and part.inline_data.mime_type.startswith("image"):
+                            st.image(part.inline_data.data)
+                        elif hasattr(part, "text"):
+                            st.markdown(part.text)
+                
+                st.markdown(st.session_state.tab4_explanation)
+                
+                if 'pdf_data' not in st.session_state:
+                    st.session_state.pdf_data = {}
+                
+                st.markdown("---")
+                
+                try:
+                    with st.spinner("📄 Preparing PDF report..."):
+                        pdf_buffer = create_pdf_report(
+                            st.session_state.tab4_question,
+                            st.session_state.tab4_explanation,
+                            st.session_state.tab4_primary_result,
+                            st.session_state.tab4_plot_response
+                        )
+                        
+                        st.session_state.pdf_data['buffer'] = pdf_buffer.getvalue()
+                        st.session_state.pdf_data['filename'] = f"ai_analytics_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    
+                    st.download_button(
+                        label="📄 Download PDF Report",
+                        data=st.session_state.pdf_data['buffer'],
+                        file_name=st.session_state.pdf_data['filename'],
+                        mime="application/pdf",
+                        type="secondary",
+                        use_container_width=True
+                    )
+                except Exception as pdf_error:
+                    st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
