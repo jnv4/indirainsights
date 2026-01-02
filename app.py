@@ -12,7 +12,7 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-from utils import create_multi_query_plan, generate_strict_sql_from_plan, fix_sql_syntax_only, execute_multi_query_plan, execute_single_query_with_retry, generate_final_explanation, has_datasets, create_pdf_report, check_password,  extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables
+from utils import create_markdown_pdf_report,create_multi_query_plan, generate_strict_sql_from_plan, fix_sql_syntax_only, execute_multi_query_plan, execute_single_query_with_retry, generate_final_explanation, has_datasets, create_pdf_report, check_password,  extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables
 load_dotenv()
 
 st.set_page_config(
@@ -27,8 +27,6 @@ load_css("styles.css")
 
 if not check_password():
     st.stop()
-
-# ━━━━━━━━━━━━━━━━━━━━ LOAD DATASETS ON LOGIN ━━━━━━━━━━━━━━━━━━━━
 
 if 'datasets_loaded' not in st.session_state:
     st.session_state.datasets_loaded = False
@@ -172,9 +170,6 @@ with tab2:
             from prompts import SYSTEM_PROMPT
             
             user_query = st.text_area("Your Question", height=120, label_visibility="visible")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
             analyze_btn = st.button("🔍 Analyze", type="primary")
             
             if analyze_btn and user_query:
@@ -269,7 +264,7 @@ with tab2:
                                     DATA AVAILABLE:
                                     {data_context}
                                     USER QUESTION: {user_query}
-                            Always colour code **numerical** values in tables.
+                            Always colour code **numerical** values full cells in tables.
                             When returning tables:
                             - Use HTML tables only
                             - Apply color coding using HEX colors ONLY
@@ -288,10 +283,36 @@ with tab2:
                             model = genai.GenerativeModel('gemini-2.5-pro')
                             
                             response = model.generate_content(full_prompt)
-                            
+
                             st.markdown(response.text, unsafe_allow_html=True)
 
                             st.markdown('</div>', unsafe_allow_html=True)
+
+                            # PDF Download Option
+                            st.markdown("---")
+                            try:
+                                with st.spinner("📄 Preparing PDF report..."):
+                                    pdf_buffer = create_markdown_pdf_report(
+                                        user_query,
+                                        response.text
+                                    )
+                                    
+                                    if 'report_pdf_data' not in st.session_state:
+                                        st.session_state.report_pdf_data = {}
+                                    
+                                    st.session_state.report_pdf_data['buffer'] = pdf_buffer.getvalue()
+                                    st.session_state.report_pdf_data['filename'] = f"market_intelligence_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                                
+                                st.download_button(
+                                    label="📄 Download PDF Report",
+                                    data=st.session_state.report_pdf_data['buffer'],
+                                    file_name=st.session_state.report_pdf_data['filename'],
+                                    mime="application/pdf",
+                                    type="secondary",
+                                    use_container_width=True
+                                )
+                            except Exception as pdf_error:
+                                st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
                         
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")

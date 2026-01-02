@@ -1040,33 +1040,60 @@ def generate_ai_plot_from_result(
 
     payload = df_to_gemini_payload(df)
 
-    prompt = f"""
-    You are a senior data analyst.
-    Respond with a dashboard of plots image
-    TASK:
-    1. Analyze the tabular data provided
-    2. Generate the MOST meaningful visualizations (bar, line, pie, trend, comparison)
-    3. Add short, sharp business insights (2–4 bullets max)
-    
-    RULES:
-    - Choose chart types intelligently
-    - Prefer clarity over decoration
-    - Focus on trends, anomalies, and business impact
-    - DO NOT hallucinate missing data
-    - If data is small, still visualize intelligently
+    prompt = f"""You are a senior data analyst with strong business intuition and visualization expertise.
 
+    OBJECTIVE:
+    Analyze the provided tabular data and produce a concise, high-impact visual dashboard that directly answers the user’s question.
+
+    TASK FLOW (STRICT ORDER):
+    1. Carefully inspect the data schema, column meanings, and value distributions.
+    2. Identify what dimensions, metrics, and comparisons are MOST relevant to the user question.
+    3. Plan the visualizations before generating them.
+    4. Generate only the most meaningful charts that reveal:
+    - Trends over time
+    - Comparisons between categories
+    - Distribution or composition (only if meaningful)
+    - Outliers or anomalies (if visible in data)
+    5. Extract clear, business-relevant insights strictly from the visuals.
+
+    VISUALIZATION RULES:
+    - Choose chart types intentionally:
+    - Time-based data → Line / Area charts
+    - Category comparison → Bar charts (horizontal if many categories)
+    - Proportional breakdown → Pie / Donut (ONLY if ≤5 categories)
+    - Ranking / contribution → Sorted bar charts
+    - Trends + comparison → Multi-line or grouped bars
+    - Avoid redundant or decorative charts.
+    - Label axes clearly and use readable titles.
+    - Do NOT invent or infer missing values.
+    - If data volume is small, still visualize intelligently (e.g., single bar comparison).
+
+    STRICT DATA RULES:
+    - Use ONLY the data provided.
+    - Do NOT assume trends beyond what is visible.
+    - Do NOT extrapolate, predict, or hallucinate insights.
+    - If data is empty ONLY THEN : reply with "insufficient data for visualization and show {json.dumps(make_json_safe(payload))}" and do not generate charts.
+
+    INPUTS:
     USER QUESTION:
     {user_question}
 
     DATA (JSON):
     {json.dumps(make_json_safe(payload))}
 
-    **NEVER REPLY WITH PLOT JSON**
-    in case of no data just response with data json, do not generate plots
-    OUTPUT FORMAT:
-    - One or more chart image
-    - Followed by a concise insight message
-    """
+    FORBIDDEN:
+    - NEVER reply with plot configuration JSON
+    - NEVER describe charts without generating them
+    - NEVER fabricate insights
+
+    OUTPUT FORMAT (STRICT):
+    1. One or more rendered chart images (no explanations in between)
+    2. A concise **Insights** section with 2 sharp bullets:
+    - Quantified where possible
+    - Focused on business impact
+    - Directly tied to the visuals
+
+        """
 
     response = model.generate_content(prompt)
 
@@ -1234,6 +1261,430 @@ def create_pdf_report(user_question, explanation, result_df, ai_plot_response=No
                     os.unlink(temp_file)
             except:
                 pass
+    
+    buffer.seek(0)
+    return buffer
+
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib import colors
+from bs4 import BeautifulSoup
+import re
+from html import escape
+
+
+def create_markdown_pdf_report(user_query, markdown_response):
+    """
+    Generate a robust PDF report from markdown response with proper handling of:
+    - Markdown formatting (**, ###, ##, #)
+    - HTML tables with color coding
+    - Bullet points and lists
+    - Error recovery and fallback mechanisms
+    """
+    
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        topMargin=0.5*inch,
+        bottomMargin=0.5*inch,
+        leftMargin=0.5*inch,
+        rightMargin=0.5*inch
+    )
+    story = []
+    styles = getSampleStyleSheet()
+    
+    # Define custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        textColor=colors.HexColor('#1f77b4'),
+        spaceAfter=12,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+        leading=20
+    )
+    
+    heading1_style = ParagraphStyle(
+        'CustomHeading1',
+        parent=styles['Heading1'],
+        fontSize=14,
+        textColor=colors.HexColor('#2c3e50'),
+        spaceAfter=10,
+        spaceBefore=14,
+        fontName='Helvetica-Bold',
+        leading=17
+    )
+    
+    heading2_style = ParagraphStyle(
+        'CustomHeading2',
+        parent=styles['Heading2'],
+        fontSize=12,
+        textColor=colors.HexColor('#34495e'),
+        spaceAfter=8,
+        spaceBefore=10,
+        fontName='Helvetica-Bold',
+        leading=15
+    )
+    
+    heading3_style = ParagraphStyle(
+        'CustomHeading3',
+        parent=styles['Heading3'],
+        fontSize=10,
+        textColor=colors.HexColor('#465668'),
+        spaceAfter=6,
+        spaceBefore=8,
+        fontName='Helvetica-Bold',
+        leading=13
+    )
+    
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=9,
+        leading=13,
+        alignment=TA_LEFT,
+        spaceBefore=4,
+        spaceAfter=4
+    )
+    
+    bullet_style = ParagraphStyle(
+        'CustomBullet',
+        parent=styles['Normal'],
+        fontSize=9,
+        leading=12,
+        leftIndent=20,
+        firstLineIndent=-10,
+        spaceBefore=2,
+        spaceAfter=2
+    )
+    
+    cell_style = ParagraphStyle(
+        'CellStyle',
+        parent=styles['Normal'],
+        fontSize=7,
+        leading=9,
+        alignment=TA_LEFT
+    )
+    
+    def clean_markdown_text(text):
+        """
+        Clean and convert markdown to HTML tags for ReportLab
+        Handles: **, *, italic, etc.
+        """
+        if not text:
+            return ""
+        
+        text = text.strip()
+        
+        # Handle bold (**text**)
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        
+        # Handle italic (*text* or _text_)
+        text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
+        text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
+        
+        # Handle inline code (`code`)
+        text = re.sub(r'`(.+?)`', r'<font face="Courier">\1</font>', text)
+        
+        return text
+    
+    def sanitize_for_paragraph(text):
+        """
+        Sanitize text for ReportLab Paragraph with proper escaping
+        """
+        if not text:
+            return ""
+        
+        # First, clean markdown
+        text = clean_markdown_text(text)
+        
+        # Extract HTML tags we want to preserve
+        tags_to_preserve = []
+        tag_pattern = r'(</?(?:b|i|u|font)[^>]*>)'
+        parts = re.split(tag_pattern, text)
+        
+        result = []
+        for part in parts:
+            if re.match(tag_pattern, part):
+                # This is a tag we want to preserve
+                tags_to_preserve.append(part)
+                result.append(f"__TAG_{len(tags_to_preserve)-1}__")
+            else:
+                # Escape this part
+                result.append(escape(part))
+        
+        # Reconstruct with preserved tags
+        text = ''.join(result)
+        for i, tag in enumerate(tags_to_preserve):
+            text = text.replace(f"__TAG_{i}__", tag)
+        
+        return text
+    
+    def safe_paragraph(text, style):
+        """Create a paragraph with comprehensive error handling"""
+        try:
+            cleaned = sanitize_for_paragraph(text)
+            return Paragraph(cleaned, style)
+        except Exception as e:
+            # Fallback: create plain text paragraph
+            try:
+                plain_text = re.sub(r'<[^>]*>', '', text)
+                return Paragraph(escape(plain_text), style)
+            except:
+                # Ultimate fallback
+                return Paragraph("(Content could not be rendered)", style)
+    
+    def parse_color(color_str):
+        """Parse color from various formats to ReportLab color"""
+        if not color_str:
+            return None
+        
+        try:
+            color_str = color_str.strip().lower()
+            
+            # Hex color
+            if color_str.startswith('#'):
+                return colors.HexColor(color_str)
+            
+            # RGB format: rgb(r, g, b)
+            rgb_match = re.match(r'rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)', color_str)
+            if rgb_match:
+                r, g, b = map(int, rgb_match.groups())
+                return colors.Color(r/255.0, g/255.0, b/255.0)
+            
+            # Named colors
+            color_map = {
+                'red': colors.red,
+                'green': colors.green,
+                'blue': colors.blue,
+                'yellow': colors.yellow,
+                'orange': colors.orange,
+                'gray': colors.gray,
+                'grey': colors.grey,
+                'white': colors.white,
+                'black': colors.black,
+            }
+            if color_str in color_map:
+                return color_map[color_str]
+            
+        except Exception:
+            pass
+        
+        return None
+    
+    def extract_cell_color(cell):
+        """Extract background color from cell style attribute"""
+        style_attr = cell.get('style', '')
+        
+        # Look for background-color or background
+        bg_patterns = [
+            r'background-color\s*:\s*([^;]+)',
+            r'background\s*:\s*([^;]+)',
+        ]
+        
+        for pattern in bg_patterns:
+            match = re.search(pattern, style_attr, re.IGNORECASE)
+            if match:
+                color_value = match.group(1).strip()
+                color = parse_color(color_value)
+                if color:
+                    return color
+        
+        return None
+    
+    def process_table(table_html):
+        """Process HTML table and convert to ReportLab Table with colors"""
+        try:
+            soup = BeautifulSoup(table_html, 'html.parser')
+            table_elem = soup.find('table')
+            
+            if not table_elem:
+                return None
+            
+            table_data = []
+            cell_colors = []
+            
+            # Process all rows
+            for tr in table_elem.find_all('tr'):
+                row_data = []
+                row_colors = []
+                
+                for cell in tr.find_all(['th', 'td']):
+                    # Get cell text and clean it
+                    cell_text = cell.get_text().strip()
+                    cell_para = safe_paragraph(cell_text, cell_style)
+                    row_data.append(cell_para)
+                    
+                    # Extract color
+                    color = extract_cell_color(cell)
+                    row_colors.append(color)
+                
+                if row_data:
+                    table_data.append(row_data)
+                    cell_colors.append(row_colors)
+            
+            if not table_data:
+                return None
+            
+            # Calculate column widths
+            num_cols = len(table_data[0])
+            available_width = 7 * inch
+            col_widths = [available_width / num_cols] * num_cols
+            
+            # Create table
+            pdf_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            
+            # Base style commands
+            style_commands = [
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 7),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ]
+            
+            # Apply cell-specific colors
+            for row_idx, row_colors in enumerate(cell_colors):
+                for col_idx, color in enumerate(row_colors):
+                    if color:
+                        style_commands.append(
+                            ('BACKGROUND', (col_idx, row_idx), (col_idx, row_idx), color)
+                        )
+            
+            # Default header background if no colors specified
+            if all(c is None for c in cell_colors[0]):
+                style_commands.append(
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f2f2f2'))
+                )
+            
+            pdf_table.setStyle(TableStyle(style_commands))
+            return pdf_table
+            
+        except Exception as e:
+            print(f"Error processing table: {e}")
+            return None
+    
+    def process_markdown_content(content):
+        """Process markdown content and extract tables"""
+        # Find all tables
+        table_pattern = r'<table[^>]*>.*?</table>'
+        tables = list(re.finditer(table_pattern, content, flags=re.DOTALL | re.IGNORECASE))
+        
+        segments = []
+        current_pos = 0
+        
+        for match in tables:
+            # Text before table
+            text_before = content[current_pos:match.start()]
+            if text_before.strip():
+                segments.append(('text', text_before))
+            
+            # Table
+            segments.append(('table', match.group(0)))
+            current_pos = match.end()
+        
+        # Remaining text
+        if current_pos < len(content):
+            remaining = content[current_pos:]
+            if remaining.strip():
+                segments.append(('text', remaining))
+        
+        return segments
+    
+    def add_text_block(text):
+        """Add text block with proper markdown parsing"""
+        lines = text.strip().split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Heading level 1 (#)
+            if line.startswith('# ') and not line.startswith('##'):
+                text = line[2:].strip()
+                story.append(safe_paragraph(text, heading1_style))
+            
+            # Heading level 2 (##)
+            elif line.startswith('## ') and not line.startswith('###'):
+                text = line[3:].strip()
+                story.append(safe_paragraph(text, heading2_style))
+            
+            # Heading level 3 (###)
+            elif line.startswith('### '):
+                text = line[4:].strip()
+                story.append(safe_paragraph(text, heading3_style))
+            
+            # Bullet points
+            elif line.startswith(('* ', '- ', '• ')):
+                text = line.lstrip('*-• ').strip()
+                story.append(safe_paragraph(f"• {text}", bullet_style))
+            
+            # Numbered lists
+            elif re.match(r'^\d+\.\s', line):
+                text = re.sub(r'^\d+\.\s*', '', line)
+                story.append(safe_paragraph(f"  {text}", bullet_style))
+            
+            # Regular paragraph
+            else:
+                story.append(safe_paragraph(line, normal_style))
+    
+    # Build the PDF
+    try:
+        # Title
+        story.append(safe_paragraph("Sales & Market Intelligence Report", title_style))
+        story.append(Spacer(1, 0.2*inch))
+        
+        # Question section
+        story.append(safe_paragraph("<b>Question:</b>", heading2_style))
+        story.append(safe_paragraph(user_query, normal_style))
+        story.append(Spacer(1, 0.15*inch))
+        
+        # Analysis section
+        story.append(safe_paragraph("<b>Analysis:</b>", heading2_style))
+        story.append(Spacer(1, 0.1*inch))
+        
+        # Process content
+        segments = process_markdown_content(markdown_response)
+        
+        for seg_type, seg_content in segments:
+            if seg_type == 'text':
+                add_text_block(seg_content)
+            elif seg_type == 'table':
+                table = process_table(seg_content)
+                if table:
+                    story.append(Spacer(1, 0.1*inch))
+                    story.append(table)
+                    story.append(Spacer(1, 0.15*inch))
+        
+        # Build PDF
+        doc.build(story)
+        
+    except Exception as e:
+        # Fallback: create simple error report
+        print(f"Error building PDF: {e}")
+        story = [
+            Paragraph("Sales & Market Intelligence Report", title_style),
+            Spacer(1, 0.2*inch),
+            Paragraph(f"<b>Question:</b> {escape(user_query)}", normal_style),
+            Spacer(1, 0.2*inch),
+            Paragraph("<b>Analysis:</b>", heading2_style),
+            Spacer(1, 0.1*inch),
+            Paragraph("An error occurred while generating the full report. Please try again or view the analysis in the web interface.", normal_style),
+            Spacer(1, 0.1*inch),
+            Paragraph(f"<i>Error details: {escape(str(e))}</i>", normal_style)
+        ]
+        doc.build(story)
     
     buffer.seek(0)
     return buffer
