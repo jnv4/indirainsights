@@ -167,38 +167,47 @@ def has_datasets() -> bool:
     return bool(st.session_state.get("active_datasets"))
 
 def read_uploaded_file(file):
-    """Read uploaded file and return dict of {sheet_name: DataFrame}"""
     file_ext = file.name.split('.')[-1].lower()
-    
+
     try:
+        # ---------------- CSV ----------------
         if file_ext == 'csv':
             df = pd.read_csv(file)
             return {file.name.replace('.csv', ''): df}
-        
+
+        # ---------------- EXCEL (ROBUST) ----------------
         elif file_ext in ['xlsx', 'xls']:
-            excel_file = pd.ExcelFile(file)
+            try:
+                # Try modern Excel first
+                excel_file = pd.ExcelFile(file, engine="openpyxl")
+            except Exception:
+                # Fallback to old Excel
+                file.seek(0)
+                excel_file = pd.ExcelFile(file, engine="xlrd")
+
             sheets = {}
             for sheet_name in excel_file.sheet_names:
-                df = pd.read_excel(excel_file, sheet_name=sheet_name)
-                sheets[sheet_name] = df
+                sheets[sheet_name] = excel_file.parse(sheet_name)
+
             return sheets
-        
+
+        # ---------------- JSON ----------------
         elif file_ext == 'json':
             content = file.read()
             data = json.loads(content)
-            
+
             if isinstance(data, list):
                 df = pd.DataFrame(data)
             elif isinstance(data, dict):
                 df = pd.DataFrame([data])
             else:
-                raise ValueError("JSON must be list or dict")
-            
+                raise ValueError("Invalid JSON structure")
+
             return {file.name.replace('.json', ''): df}
-        
+
         else:
             raise ValueError(f"Unsupported file type: {file_ext}")
-    
+
     except Exception as e:
         raise Exception(f"Error reading file {file.name}: {str(e)}")
 
@@ -221,86 +230,162 @@ def make_json_safe(obj):
     else:
         return obj
 
-def clean_dataframe(df):
-    """Clean and normalize DataFrame"""
-    df_clean = df.copy()
+import gzip
+import io
+
+def compress_dataframe(df):
+    """Compress DataFrame to reduce upload size"""
+    try:
+        # Convert to CSV
+        csv_buffer = StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_data = csv_buffer.getvalue().encode('utf-8')
+        
+        # Compress with gzip
+        compressed_buffer = BytesIO()
+        with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=9) as gz_file:
+            gz_file.write(csv_data)
+        
+        compressed_data = compressed_buffer.getvalue()
+        
+        # Calculate compression ratio
+        original_size = len(csv_data)
+        compressed_size = len(compressed_data)
+        ratio = (1 - compressed_size / original_size) * 100
+        
+        return compressed_data, original_size, compressed_size, ratio
     
-    # Normalize column names
-    df_clean.columns = [
-        col.lower().strip().replace(' ', '_').replace('-', '_')
-        for col in df_clean.columns
-    ]
-    
-    # Drop fully empty columns
-    df_clean = df_clean.dropna(axis=1, how='all')
-    
-    # Remove duplicate rows
-    df_clean = df_clean.drop_duplicates()
-    
-    # Trim string values
-    for col in df_clean.select_dtypes(include=['object']).columns:
-        df_clean[col] = df_clean[col].astype(str).str.strip()
-    
-    # Reset index
-    df_clean = df_clean.reset_index(drop=True)
-    
-    return df_clean
+    except Exception as e:
+        raise Exception(f"Compression failed: {str(e)}")
 
 def upload_to_supabase(bucket, path, content):
-    """Upload content to Supabase Storage"""
+    """Upload content to Supabase Storage with compression and chunking support"""
     if not supabase_client:
         raise Exception("Supabase client not initialized")
     
     try:
-        # Delete existing file if present
-        try:
-            supabase_client.storage.from_(bucket).remove([path])
-        except:
-            pass
-        
-        # Upload new file
-        result = supabase_client.storage.from_(bucket).upload(
-            path=path,
-            file=content,
-            file_options={"content-type": "text/csv"}
-        )
-        
-        return result
-    
-    except Exception as e:
-        raise Exception(f"Error uploading to Supabase: {str(e)}")
-
-def register_dataset(metadata):
-    """Register dataset metadata in Supabase table"""
-    if not supabase_client:
-        raise Exception("Supabase client not initialized")
-    
-    try:
-        # Check if dataset already exists
-        existing = supabase_client.table(METADATA_TABLE).select("*").eq(
-            "dataset_name", metadata["dataset_name"]
-        ).execute()
-        
-        if existing.data:
-            # Update existing record
-            result = supabase_client.table(METADATA_TABLE).update({
-                "file_name": metadata["file_name"],
-                "bucket": metadata["bucket"],
-                "schema": metadata["schema"],
-                "row_count": metadata["row_count"],
-                "uploaded_at": metadata["uploaded_at"],
-                "field": metadata.get("field", "Unknown")
-            }).eq("dataset_name", metadata["dataset_name"]).execute()
+        # Convert content to DataFrame if needed
+        if isinstance(content, pd.DataFrame):
+            df = content
         else:
-            # Insert new record
-            result = supabase_client.table(METADATA_TABLE).insert(metadata).execute()
+            # If already bytes/string, convert to DataFrame first
+            if isinstance(content, str):
+                file_content = content.encode('utf-8')
+            elif isinstance(content, BytesIO):
+                file_content = content.getvalue()
+            elif isinstance(content, bytes):
+                file_content = content
+            else:
+                raise ValueError(f"Unsupported content type: {type(content)}")
+            
+            # Try to parse as CSV
+            try:
+                df = pd.read_csv(BytesIO(file_content))
+            except:
+                raise ValueError("Could not parse content as DataFrame")
         
-        return result
+        # Check if compression is needed
+        csv_buffer = StringIO()
+        df.to_csv(csv_buffer, index=False)
+        original_csv = csv_buffer.getvalue().encode('utf-8')
+        original_size = len(original_csv)
+        
+        # Size limits
+        API_LIMIT = 50 * 1024 * 1024  # 50MB API limit
+        CHUNK_THRESHOLD = 40 * 1024 * 1024  # Start chunking at 40MB
+        
+        # If file is too large, try compression first
+        if original_size > CHUNK_THRESHOLD:
+            st.info(f"File size: {original_size / (1024*1024):.2f} MB - attempting compression...")
+            
+            compressed_data, orig_size, comp_size, ratio = compress_dataframe(df)
+            
+            st.info(f"Compressed: {orig_size/(1024*1024):.2f} MB → {comp_size/(1024*1024):.2f} MB ({ratio:.1f}% reduction)")
+            
+            # If compressed size is within limits, upload compressed
+            if comp_size < API_LIMIT:
+                # Change path to indicate compressed file
+                compressed_path = path.replace('.csv', '.csv.gz')
+                
+                # Delete existing files (both compressed and uncompressed)
+                try:
+                    supabase_client.storage.from_(bucket).remove([path])
+                except:
+                    pass
+                try:
+                    supabase_client.storage.from_(bucket).remove([compressed_path])
+                except:
+                    pass
+                
+                # Upload compressed file
+                result = supabase_client.storage.from_(bucket).upload(
+                    path=compressed_path,
+                    file=compressed_data,
+                    file_options={
+                        "content-type": "application/gzip",
+                        "upsert": "true"
+                    }
+                )
+                
+                st.success(f"✅ Uploaded compressed file: {compressed_path}")
+                return result
+            else:
+                # Even compressed is too large - need to split dataset
+                st.warning(f"File is too large even after compression ({comp_size/(1024*1024):.2f} MB)")
+                raise Exception(
+                    f"File too large for upload ({comp_size/(1024*1024):.2f} MB after compression). "
+                    f"Please split your dataset into smaller files (recommended: <100K rows per file) "
+                    f"or upload directly through Supabase dashboard."
+                )
+        
+        # File is small enough - upload uncompressed
+        else:
+            file_content = original_csv
+            
+            # Validate final size
+            if len(file_content) > API_LIMIT:
+                raise Exception(
+                    f"File too large ({len(file_content)/(1024*1024):.2f} MB). "
+                    f"Maximum size: {API_LIMIT/(1024*1024):.2f} MB. "
+                    f"Please split your dataset or upload through Supabase dashboard."
+                )
+            
+            # Delete existing file
+            try:
+                supabase_client.storage.from_(bucket).remove([path])
+            except:
+                pass
+            
+            # Upload with proper options
+            result = supabase_client.storage.from_(bucket).upload(
+                path=path,
+                file=file_content,
+                file_options={
+                    "content-type": "text/csv",
+                    "upsert": "true"
+                }
+            )
+            
+            return result
     
     except Exception as e:
-        raise Exception(f"Error registering dataset: {str(e)}")
+        error_msg = str(e)
+        if "Payload too large" in error_msg or "413" in error_msg:
+            raise Exception(
+                "File size exceeds API limits. Solutions:\n"
+                "1. Split dataset into smaller files (<100K rows each)\n"
+                "2. Upload directly through Supabase dashboard\n"
+                "3. Use Supabase CLI for large files"
+            )
+        elif "Bucket not found" in error_msg:
+            raise Exception(f"Storage bucket '{bucket}' not found. Please create it in Supabase dashboard.")
+        elif "Invalid JWT" in error_msg or "JWT" in error_msg:
+            raise Exception("Authentication failed. Please check SUPABASE_SERVICE_KEY environment variable.")
+        else:
+            raise Exception(f"Upload failed: {error_msg}")
 
 def load_registered_datasets():
+    """Load datasets from Supabase with support for compressed files"""
     if not supabase_client:
         return None
     
@@ -312,6 +397,7 @@ def load_registered_datasets():
             return None
         
         datasets = {}
+        failed_loads = []
         
         for record in result.data:
             dataset_name = record["dataset_name"]
@@ -320,19 +406,61 @@ def load_registered_datasets():
             field = record.get("field", "Unknown")
             
             try:
-                # Download CSV from Supabase Storage
-                file_data = supabase_client.storage.from_(bucket).download(file_name)
+                # Try compressed version first, then uncompressed
+                file_data = None
+                is_compressed = False
+                
+                # Check if file is compressed
+                if file_name.endswith('.csv.gz'):
+                    is_compressed = True
+                else:
+                    # Try to load compressed version
+                    try:
+                        file_data = supabase_client.storage.from_(bucket).download(file_name + '.gz')
+                        is_compressed = True
+                    except:
+                        pass
+                
+                # If no compressed version, load normal
+                if file_data is None:
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            file_data = supabase_client.storage.from_(bucket).download(file_name)
+                            break
+                        except Exception as download_error:
+                            if attempt == max_retries - 1:
+                                raise download_error
+                            import time
+                            time.sleep(1)
+                
+                if file_data is None:
+                    raise Exception("Failed to download file")
+                
+                # Decompress if needed
+                if is_compressed:
+                    with gzip.GzipFile(fileobj=BytesIO(file_data)) as gz_file:
+                        file_data = gz_file.read()
                 
                 # Load into DataFrame
                 df = pd.read_csv(BytesIO(file_data))
+                
+                # Validate DataFrame
+                if df.empty:
+                    st.warning(f"Dataset {dataset_name} is empty")
+                    continue
+                
                 datasets[dataset_name] = {
                     'dataframe': df,
                     'field': field
                 }
                 
             except Exception as e:
-                st.warning(f"Could not load dataset {dataset_name}: {str(e)}")
+                failed_loads.append(f"{dataset_name}: {str(e)}")
                 continue
+        
+        if failed_loads:
+            st.warning(f"Could not load {len(failed_loads)} dataset(s):\n" + "\n".join(failed_loads))
         
         return datasets if datasets else None
     
@@ -340,6 +468,133 @@ def load_registered_datasets():
         st.warning(f"Error loading registered datasets: {str(e)}")
         return None
 
+def clean_dataframe(df):
+    """Clean and normalize DataFrame with aggressive size optimization"""
+    df_clean = df.copy()
+    
+    # Normalize column names
+    df_clean.columns = [
+        col.lower().strip().replace(' ', '_').replace('-', '_').replace('.', '_')
+        for col in df_clean.columns
+    ]
+    
+    # Remove special characters from column names
+    df_clean.columns = [''.join(c if c.isalnum() or c == '_' else '_' for c in col) 
+                        for col in df_clean.columns]
+    
+    # Drop fully empty columns
+    df_clean = df_clean.dropna(axis=1, how='all')
+    
+    # Remove duplicate rows
+    initial_rows = len(df_clean)
+    df_clean = df_clean.drop_duplicates()
+    removed_dupes = initial_rows - len(df_clean)
+    if removed_dupes > 0:
+        st.info(f"Removed {removed_dupes:,} duplicate rows")
+    
+    # Trim string values and handle whitespace
+    for col in df_clean.select_dtypes(include=['object']).columns:
+        df_clean[col] = df_clean[col].astype(str).str.strip()
+        # Replace empty strings with NaN
+        df_clean[col] = df_clean[col].replace(['', 'nan', 'NaN', 'None', 'NULL'], pd.NA)
+    
+    # Aggressive data type optimization
+    for col in df_clean.select_dtypes(include=['float64']).columns:
+        if df_clean[col].notna().any():
+            # Check if can be converted to int
+            if (df_clean[col].dropna() % 1 == 0).all():
+                # Check range for int type
+                col_min = df_clean[col].min()
+                col_max = df_clean[col].max()
+                
+                if col_min >= -32768 and col_max <= 32767:
+                    df_clean[col] = df_clean[col].astype('Int16')
+                elif col_min >= -2147483648 and col_max <= 2147483647:
+                    df_clean[col] = df_clean[col].astype('Int32')
+                else:
+                    df_clean[col] = df_clean[col].astype('Int64')
+            else:
+                df_clean[col] = df_clean[col].astype('float32')
+    
+    for col in df_clean.select_dtypes(include=['int64']).columns:
+        col_min = df_clean[col].min()
+        col_max = df_clean[col].max()
+        
+        if col_min >= -128 and col_max <= 127:
+            df_clean[col] = df_clean[col].astype('int8')
+        elif col_min >= -32768 and col_max <= 32767:
+            df_clean[col] = df_clean[col].astype('int16')
+        elif col_min >= -2147483648 and col_max <= 2147483647:
+            df_clean[col] = df_clean[col].astype('int32')
+    
+    # Convert object columns with low cardinality to category
+    for col in df_clean.select_dtypes(include=['object']).columns:
+        num_unique = df_clean[col].nunique()
+        if num_unique / len(df_clean) < 0.5:  # Less than 50% unique values
+            df_clean[col] = df_clean[col].astype('category')
+    
+    # Reset index
+    df_clean = df_clean.reset_index(drop=True)
+    
+    # Report size
+    size_mb = df_clean.memory_usage(deep=True).sum() / (1024 * 1024)
+    st.info(f"Optimized dataset size: {size_mb:.2f} MB ({len(df_clean):,} rows)")
+    
+    return df_clean
+
+def register_dataset(metadata):
+    """Register dataset metadata in Supabase table with validation"""
+    if not supabase_client:
+        raise Exception("Supabase client not initialized")
+    
+    try:
+        # Validate required fields
+        required_fields = ["dataset_name", "file_name", "bucket", "schema", "row_count", "uploaded_at"]
+        for field in required_fields:
+            if field not in metadata:
+                raise ValueError(f"Missing required field: {field}")
+        
+        # Ensure schema is JSON-serializable
+        metadata["schema"] = make_json_safe(metadata["schema"])
+        
+        # Validate row_count is integer
+        if not isinstance(metadata["row_count"], int):
+            metadata["row_count"] = int(metadata["row_count"])
+        
+        # Check if dataset already exists
+        existing = supabase_client.table(METADATA_TABLE).select("*").eq(
+            "dataset_name", metadata["dataset_name"]
+        ).execute()
+        
+        if existing.data:
+            # Update existing record
+            update_data = {
+                "file_name": metadata["file_name"],
+                "bucket": metadata["bucket"],
+                "schema": metadata["schema"],
+                "row_count": metadata["row_count"],
+                "uploaded_at": metadata["uploaded_at"],
+                "field": metadata.get("field", "Unknown")
+            }
+            
+            result = supabase_client.table(METADATA_TABLE).update(
+                update_data
+            ).eq("dataset_name", metadata["dataset_name"]).execute()
+        else:
+            # Insert new record
+            result = supabase_client.table(METADATA_TABLE).insert(metadata).execute()
+        
+        return result
+    
+    except Exception as e:
+        error_msg = str(e)
+        if "violates foreign key constraint" in error_msg:
+            raise Exception("Database constraint violation. Please check your data integrity.")
+        elif "duplicate key value" in error_msg:
+            raise Exception(f"Dataset '{metadata.get('dataset_name')}' already exists.")
+        else:
+            raise Exception(f"Registration failed: {error_msg}")
+ 
 def delete_dataset(dataset_name: str):
     if not supabase_client:
         raise Exception("Supabase not configured")
