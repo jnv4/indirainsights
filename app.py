@@ -184,47 +184,42 @@ with tab2:
                 st.session_state.active_tab = 1
                 st.session_state.tab2_query = user_query
                 st.session_state.tab2_response = None
-                with st.spinner("🧠 Identifying relevant data..."):
-                    try:
-                        relevant_files = identify_relevant_files(user_query, st.session_state.gemini_api_key)
+                try:
+                    relevant_files = identify_relevant_files(user_query, st.session_state.gemini_api_key)
 
-                        if not relevant_files:
-                            st.warning("No relevant datasets found for this question.")
-                        else:
-                            st.info(f"🔍 Analyzing: {', '.join(relevant_files)}")
 
-                        relevant_data = {}
-                        for file_name in relevant_files:
-                            with st.spinner(f"Loading {file_name}..."):
-                                try:
-                                    relevant_data[file_name] = get_dataset(file_name)
-                                except Exception as e:
-                                    st.warning(f"Could not load {file_name}: {str(e)}")
+                    relevant_data = {}
+                    for file_name in relevant_files:
+                        with st.spinner(f"Loading {file_name}..."):
+                            try:
+                                relevant_data[file_name] = get_dataset(file_name)
+                            except Exception as e:
+                                st.warning(f"Could not load {file_name}: {str(e)}")
                         
-                        data_context = ""
+                    data_context = ""
 
-                        for name, data in relevant_data.items():
-                            df = data['dataframe'] if isinstance(data, dict) else data
-                            table_name = name.lower().replace(" ", "_").replace("-", "_")
+                    for name, data in relevant_data.items():
+                        df = data['dataframe'] if isinstance(data, dict) else data
+                        table_name = name.lower().replace(" ", "_").replace("-", "_")
 
-                            data_context += f"\n\n### Dataset: {name}\n"
-                            data_context += f"Table name: {table_name}\n"
-                            data_context += f"Total rows: {len(df)}\n"
-                            data_context += f"Columns ({len(df.columns)}): {', '.join(df.columns)}\n"
+                        data_context += f"\n\n### Dataset: {name}\n"
+                        data_context += f"Table name: {table_name}\n"
+                        data_context += f"Total rows: {len(df)}\n"
+                        data_context += f"Columns ({len(df.columns)}): {', '.join(df.columns)}\n"
 
                             # ---------- Numeric summary ----------
-                            numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-                            if numeric_cols:
-                                numeric_summary = (
-                                    df[numeric_cols]
-                                    .agg(["min", "max", "mean", "median", "std"])
-                                    .round(2)
-                                    .to_dict()
-                                )
+                        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+                        if numeric_cols:
+                            numeric_summary = (
+                                df[numeric_cols]
+                                .agg(["min", "max", "mean", "median", "std"])
+                                .round(2)
+                                .to_dict()
+                            )
 
-                                data_context += "\nNumeric column summary (distribution-level):\n"
-                                for col, stats in numeric_summary.items():
-                                    data_context += (
+                            data_context += "\nNumeric column summary (distribution-level):\n"
+                            for col, stats in numeric_summary.items():
+                                data_context += (
                                         f"- {col}: min={stats['min']}, "
                                         f"max={stats['max']}, "
                                         f"mean={stats['mean']}, "
@@ -233,41 +228,40 @@ with tab2:
                                     )
 
                             # ---------- Categorical dominance ----------
-                            categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
-                            if categorical_cols:
-                                data_context += "\nCategorical dominance (top 3 values):\n"
-                                for col in categorical_cols[:4]:  # cap to avoid noise
-                                    vc = df[col].value_counts(normalize=True).head(3)
-                                    dominance = {k: round(v * 100, 2) for k, v in vc.items()}
-                                    data_context += f"- {col}: {dominance}\n"
+                        categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
+                        if categorical_cols:
+                            data_context += "\nCategorical dominance (top 3 values):\n"
+                            for col in categorical_cols[:4]:  # cap to avoid noise
+                                vc = df[col].value_counts(normalize=True).head(3)
+                                dominance = {k: round(v * 100, 2) for k, v in vc.items()}
+                                data_context += f"- {col}: {dominance}\n"
 
                             # ---------- Skew / imbalance signal ----------
-                            if numeric_cols:
-                                skew_info = {
-                                    col: round(df[col].skew(), 2)
-                                    for col in numeric_cols
-                                    if df[col].nunique() > 5
-                                }
-                                if skew_info:
-                                    data_context += "\nDistribution skew indicators:\n"
-                                    for col, skew in skew_info.items():
-                                        data_context += f"- {col}: skew={skew}\n"
-
-                            # ---------- Missing data ----------
-                            missing = (
-                                df.isna().mean()
-                                .mul(100)
-                                .round(2)
-                                .to_dict()
-                            )
-                            significant_missing = {k: v for k, v in missing.items() if v > 5}
-                            if significant_missing:
-                                data_context += "\nMissing data (>5%):\n"
-                                for col, pct in significant_missing.items():
-                                    data_context += f"- {col}: {pct}% missing\n"
-                        
-                        with st.spinner("🤔 Generating insights..."):
-                            full_prompt = f"""{SYSTEM_PROMPT}
+                        if numeric_cols:
+                            skew_info = {
+                                col: round(df[col].skew(), 2)
+                                for col in numeric_cols
+                                if df[col].nunique() > 5
+                            }
+                            if skew_info:
+                                data_context += "\nDistribution skew indicators:\n"
+                                for col, skew in skew_info.items():
+                                    data_context += f"- {col}: skew={skew}\n"
+                            # ---------- Missing data ---------
+                        missing = (
+                            df.isna().mean()
+                            .mul(100)
+                            .round(2)
+                            .to_dict()
+                        )
+                        significant_missing = {k: v for k, v in missing.items() if v > 5}
+                        if significant_missing:
+                            data_context += "\nMissing data (>5%):\n"
+                            for col, pct in significant_missing.items():
+                                data_context += f"- {col}: {pct}% missing\n"
+                
+                    with st.spinner("🤔 Generating insights..."):
+                        full_prompt = f"""{SYSTEM_PROMPT}
                             **Your answer should be VERY detailed**
                             Always consider cultural, regional, demographic, socio-economic, and platform-specific factors when analyzing IVF-related data, insights, or strategies. Additionally, factor in all relevant marketing dimensions, including audience segmentation, messaging sensitivity, channel effectiveness, regional ad behavior, conversion funnels, trust signals, compliance constraints, and competitive positioning.
 
@@ -277,7 +271,7 @@ with tab2:
                                     USER QUESTION: {user_query}
                             Always colour code **numerical** values full cells in tables.
                             When returning tables:
-                            - Use HTML tables only
+                            - Use HTML tables only (DO NOT use markdown tables (STRICTLY HTML))
                             - Apply color coding using HEX colors ONLY
                             - Use ONLY the following palette:
                             Positive / Outperforming: #34d399
@@ -289,17 +283,17 @@ with tab2:
 
 
                             """
-                            genai.configure(api_key=st.session_state.gemini_api_key)
+                        genai.configure(api_key=st.session_state.gemini_api_key)
                             
-                            model = genai.GenerativeModel('gemini-2.5-pro')
-                            
-                            response = model.generate_content(full_prompt)
-
-                            st.session_state.tab2_response = response.text
+                        model = genai.GenerativeModel('gemini-2.5-pro')
                         
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
-                        st.info("If this is an API key error, please reconfigure your API key using the 'Change API Key' button above")
+                        response = model.generate_content(full_prompt)
+
+                        st.session_state.tab2_response = response.text
+                        
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+                    st.info("If this is an API key error, please reconfigure your API key using the 'Change API Key' button above")
             
             if st.session_state.tab2_response:
                 st.markdown(st.session_state.tab2_response, unsafe_allow_html=True)
