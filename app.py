@@ -119,7 +119,7 @@ with tab1:
             
             # Show data preview
             st.markdown("### 📋 Data Preview")
-            st.dataframe(df.head(100), use_container_width=True)
+            st.dataframe(df.head(100), width='stretch')
             
             # Column info
             with st.expander("📝 Column Information"):
@@ -130,7 +130,7 @@ with tab1:
                     'Null': df.isnull().sum().values,
                     'Unique': [df[col].nunique() for col in df.columns]
                 })
-                st.dataframe(col_info, use_container_width=True)
+                st.dataframe(col_info, width='stretch')
 
 with tab2:
     st.markdown("## 🤖 Sales & Market Intelligence Report Bot")
@@ -170,7 +170,7 @@ with tab2:
 
                     # Filter to only existing tables
                     relevant_files = [t for t in relevant_files if t in all_tables]
-
+                    st.info(f"Identified {relevant_files} relevant tables for the analysis.")
                     if not relevant_files:
                         st.warning("No relevant tables identified. Using all available tables.")
                         relevant_files = all_tables
@@ -307,8 +307,7 @@ with tab2:
                         data=st.session_state.report_pdf_data['buffer'],
                         file_name=st.session_state.report_pdf_data['filename'],
                         mime="application/pdf",
-                        type="secondary",
-                        use_container_width=True
+                        type="secondary",width='stretch'
                     )
                 except Exception as pdf_error:
                     st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
@@ -385,7 +384,7 @@ with tab3:
                             schema_info,
                             st.session_state.gemini_api_key
                         )
-                        
+                        print(execution_result)
                         successful_results = execution_result["success"]
                         failed_queries = execution_result["failed"]
                         
@@ -395,7 +394,7 @@ with tab3:
                         }
                         
                         if not non_empty_results:
-                            st.warning("No relevant data found. Try rephrasing your question.")
+                            st.error("No relevant data found. Try rephrasing your question.")
                             
                             if failed_queries:
                                 with st.expander("🔍 Debug Info (Optional)", expanded=False):
@@ -468,8 +467,7 @@ with tab3:
                         data=st.session_state.pdf_data['buffer'],
                         file_name=st.session_state.pdf_data['filename'],
                         mime="application/pdf",
-                        type="secondary",
-                        use_container_width=True
+                        type="secondary",width='stretch'
                     )
                 except Exception as pdf_error:
                     st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")

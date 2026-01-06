@@ -516,7 +516,6 @@ def clean_dataframe(df):
     
     # Report size
     size_mb = df_clean.memory_usage(deep=True).sum() / (1024 * 1024)
-    st.info(f"Optimized dataset size: {size_mb:.2f} MB ({len(df_clean):,} rows)")
     
     return df_clean
 
