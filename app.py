@@ -12,7 +12,32 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-from utils import create_markdown_pdf_report,create_multi_query_plan, generate_strict_sql_from_plan, fix_sql_syntax_only, execute_multi_query_plan, execute_single_query_with_retry, generate_final_explanation, has_datasets, create_pdf_report, check_password,  extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables
+from utils import (
+    create_markdown_pdf_report,
+    create_multi_query_plan,
+    generate_strict_sql_from_plan,
+    fix_sql_syntax_only,
+    execute_multi_query_plan,
+    execute_single_query_with_retry,
+    generate_final_explanation,
+    has_datasets,
+    create_pdf_report,
+    check_password,
+    extract_duckdb_schema,
+    read_uploaded_file,
+    make_json_safe,
+    clean_dataframe,
+    extract_schema,
+    identify_relevant_files,
+    top_value_metrics,
+    validate_api_key,
+    get_dataset,
+    get_schema_info_from_azure,
+    load_csv,
+    initialize_duckdb_from_azure_datasets,
+    get_duckdb_tables,
+    load_all_azure_tables
+)
 load_dotenv()
 
 st.set_page_config(
@@ -33,17 +58,16 @@ if 'datasets_loaded' not in st.session_state:
     st.session_state.active_datasets = {}
 
 if not st.session_state.datasets_loaded:
-    with st.spinner("Loading registered datasets..."):
-        registered_datasets = load_registered_datasets()
+    with st.spinner("Loading Azure SQL tables..."):
+        azure_datasets = load_all_azure_tables()
         
-        if registered_datasets:
-            st.session_state.active_datasets = registered_datasets
-            st.success(f"✅ Loaded {len(registered_datasets)} datasets from Supabase")
-
+        if azure_datasets:
+            st.session_state.active_datasets = azure_datasets
+            st.success(f"✅ Loaded {len(azure_datasets)} tables from Azure SQL")
+        else:
+            st.warning("⚠️ No Azure SQL tables loaded. Check your connection settings.")
         
         st.session_state.datasets_loaded = True
-
-# ━━━━━━━━━━━━━━━━━━━━ INITIALIZE SESSION STATE ━━━━━━━━━━━━━━━━━━━━
 
 if 'gemini_api_key' not in st.session_state:
     env_api_key = os.getenv('GEMINI_API_KEY')
@@ -57,103 +81,56 @@ st.title("📊 Marketing Performance Insights")
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = 0
 
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Dashboard", "📈AI Report", "📤 Upload Data", "🔍 AI Analytics"])
+tab1, tab2, tab3= st.tabs(["📈 Dashboard", "📈AI Report", "🔍 AI Analytics"])
 with tab1:
-    st.sidebar.title("📂 Insights By Field")
+    st.sidebar.title("📊 Azure SQL Tables")
 
     registered_datasets = st.session_state.active_datasets
 
     if not registered_datasets:
         st.sidebar.info("🔭 No datasets available")
-        st.info("No datasets found. Please upload data from the **Upload Data** tab.")
+        st.info("No Azure SQL tables loaded. Check your database connection.")
     else:
-        # Group datasets by field
-        datasets_by_field = {}
-        for dataset_name, data in registered_datasets.items():
-            field = data.get('field', 'Unknown')
-            if field not in datasets_by_field:
-                datasets_by_field[field] = []
-            datasets_by_field[field].append(dataset_name)
-
-        # Sidebar: Select field
-        selected_field = st.sidebar.radio(
-            "Select a field",
-            AVAILABLE_FIELDS,
-            key="selected_field"
-        )
-
-        # Get all datasets for this field
-        field_datasets = datasets_by_field.get(selected_field, [])
+        # List all tables in sidebar
+        st.sidebar.markdown("**Available Tables:**")
+        table_names = list(registered_datasets.keys())
         
-        if not field_datasets:
-            st.info(f"No datasets uploaded for **{selected_field}** yet.")
-        else:
-            st.markdown(f"## 📊 {selected_field} - Consolidated Insights")
+        selected_table = st.sidebar.selectbox(
+            "Select a table to view",
+            table_names,
+            key="selected_table"
+        )
+        
+        if selected_table:
+            df = get_dataset(selected_table)
             
-            # Aggregate metrics across all datasets in this field
-            total_records = 0
-            all_primary_values = []
-
-            for dataset_name in field_datasets:
-                df = get_dataset(dataset_name)
-                total_records += len(df)
-                
-                # Collect primary column values (excluding NaN, None, empty strings)
-                primary_col = df.columns[0]
-                valid_values = df[primary_col].dropna().astype(str)
-                valid_values = valid_values[valid_values.str.strip() != '']
-                valid_values = valid_values[valid_values.str.lower() != 'nan']
-                valid_values = valid_values[valid_values.str.lower() != 'none']
-                all_primary_values.extend(valid_values.tolist())
-
-            # Calculate aggregated metrics
-            if len(all_primary_values) > 0:
-                value_counts = pd.Series(all_primary_values).value_counts()
-                top_val = value_counts.index[0]
-                top_share = round((value_counts.iloc[0] / len(all_primary_values)) * 100, 2)
-                low_val = value_counts.index[-1]
-            else:
-                top_val = "N/A"
-                top_share = 0
-                low_val = "N/A"
-            c1, c2, c3, c4 = st.columns(4)
+            st.markdown(f"## 📊 {selected_table}")
             
+            # Basic metrics
+            total_records = len(df)
+            num_columns = len(df.columns)
+            
+            c1, c2, c3 = st.columns(3)
             c1.metric("Total Records", f"{total_records:,}")
-            c2.metric("Top Value", top_val)
-            c3.metric("Top Share %", f"{top_share}%")
-            c4.metric("Lowest Value", low_val)
-
-            # CRM-specific conversion analysis
-            if selected_field == "CRM":
-                st.divider()
-                st.markdown("### 🎯 Conversion Insights (Across All CRM Datasets)")
-                
-                total_leads = 0
-                total_converted = 0
-                
-                for dataset_name in field_datasets:
-                    df = get_dataset(dataset_name)
-                    if "Converted" in df.columns or "converted" in df.columns:
-                        conv_col = "Converted" if "Converted" in df.columns else "converted"
-                        total_leads += len(df)
-                        total_converted += len(df[df[conv_col].astype(str).str.lower() == "true"])
-                
-                if total_leads > 0:
-                    conversion_rate = round((total_converted / total_leads) * 100, 2)
-                    
-                    cc1, cc2, cc3 = st.columns(3)
-                    cc1.metric("Total Leads", f"{total_leads:,}")
-                    cc2.metric("Converted Leads", f"{total_converted:,}")
-                    cc3.metric("Conversion Rate", f"{conversion_rate}%")
-
-            # Show individual datasets under this field
-            st.divider()
-            st.markdown(f"### 📁 Datasets in {selected_field}")
+            c2.metric("Columns", num_columns)
+            c3.metric("Memory Size", f"{df.memory_usage(deep=True).sum() / (1024*1024):.2f} MB")
             
-            for dataset_name in field_datasets:
-                df = get_dataset(dataset_name)
-                with st.expander(f"🔍 {dataset_name} ({len(df):,} rows)"):
-                    st.dataframe(df.head(100), width='stretch')
+            st.divider()
+            
+            # Show data preview
+            st.markdown("### 📋 Data Preview")
+            st.dataframe(df.head(100), use_container_width=True)
+            
+            # Column info
+            with st.expander("📝 Column Information"):
+                col_info = pd.DataFrame({
+                    'Column': df.columns,
+                    'Type': df.dtypes.astype(str),
+                    'Non-Null': df.count().values,
+                    'Null': df.isnull().sum().values,
+                    'Unique': [df[col].nunique() for col in df.columns]
+                })
+                st.dataframe(col_info, use_container_width=True)
 
 with tab2:
     st.markdown("## 🤖 Sales & Market Intelligence Report Bot")
@@ -185,8 +162,18 @@ with tab2:
                 st.session_state.tab2_query = user_query
                 st.session_state.tab2_response = None
                 try:
+                    # Get all available tables
+                    all_tables = list(st.session_state.active_datasets.keys())
+
+                    # Identify relevant tables using AI
                     relevant_files = identify_relevant_files(user_query, st.session_state.gemini_api_key)
 
+                    # Filter to only existing tables
+                    relevant_files = [t for t in relevant_files if t in all_tables]
+
+                    if not relevant_files:
+                        st.warning("No relevant tables identified. Using all available tables.")
+                        relevant_files = all_tables
 
                     relevant_data = {}
                     for file_name in relevant_files:
@@ -327,159 +314,6 @@ with tab2:
                     st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
 
 with tab3:
-    st.markdown("## 📤 Upload Marketing Data")
-    st.markdown("Upload CSV, Excel, or JSON files to extend your analytics")
-    try:
-        from utils import supabase_client
-    except Exception:
-        st.error("⚠️ Supabase is not configured. Please set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env file.")
-        st.stop()
-
-    else:
-        st.markdown("<br>", unsafe_allow_html=True)
-            
-        # Field selection
-        selected_upload_field = st.selectbox(
-            "📌 Select Field for Upload",
-            AVAILABLE_FIELDS,
-            key="upload_field_selector"
-        )
-
-        st.markdown(f"**Uploading to:** `{selected_upload_field}`")
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        uploaded_files = st.file_uploader(
-            "Choose files to upload",
-            type=['csv', 'xlsx', 'xls', 'json'],
-            accept_multiple_files=True
-        )
-            
-        if uploaded_files:
-            st.markdown(f"**{len(uploaded_files)} file(s) selected**")
-                
-            if st.button("🚀 Process & Upload", type="primary"):
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                    
-                total_files = len(uploaded_files)
-                processed_count = 0
-                success_count = 0
-                    
-                for idx, file in enumerate(uploaded_files):
-                    try:
-                        status_text.text(f"Processing {file.name}...")
-                            
-                            # Read file
-                        sheets = read_uploaded_file(file)
-                            
-                        for sheet_name, df in sheets.items():
-                                # Clean data
-                            df_clean = clean_dataframe(df)
-                                
-                                # Extract schema
-                            schema = extract_schema(df_clean)
-                                
-                                # Convert to CSV
-                            csv_buffer = BytesIO()
-                            df_clean.to_csv(csv_buffer, index=False)
-                            csv_buffer.seek(0)
-                                
-                                # Generate unique file name
-                            dataset_name = f"{file.name.split('.')[0]}_{sheet_name}" if len(sheets) > 1 else file.name.split('.')[0]
-                            file_name = f"{dataset_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                            
-                                # Upload to Supabase
-                            try:
-                                upload_to_supabase(SUPABASE_BUCKET, file_name, csv_buffer.getvalue())
-
-                                metadata = {
-                                    "dataset_name": dataset_name,
-                                    "file_name": file_name,
-                                    "bucket": SUPABASE_BUCKET,
-                                    "schema": extract_schema(df_clean),
-                                    "row_count": int(len(df_clean)),
-                                    "uploaded_at": datetime.utcnow().isoformat(),
-                                    "field": selected_upload_field
-                                }
-
-                                register_dataset(metadata)
-
-                                st.session_state.active_datasets[dataset_name] = {
-                                    'dataframe': df_clean,
-                                    'field': selected_upload_field
-                                }
-                                success_count += 1
-
-                            except Exception as e:
-                                # 🔥 ROLLBACK storage if metadata fails
-                                try:
-                                    supabase_client.storage.from_(SUPABASE_BUCKET).remove([file_name])
-                                except:
-                                    pass
-
-                                raise Exception(f"Upload failed and rolled back: {str(e)}")
-
-                            
-                        processed_count += 1
-                        progress_bar.progress(processed_count / total_files)
-                            
-                    except Exception as e:
-                        st.error(f"❌ Error processing {file.name}: {str(e)}")
-                    
-                status_text.text("✅ Upload complete!")
-                st.success(f"Successfully processed {success_count} dataset(s)")
-                    
-                if success_count > 0:
-                    st.info("🔄 Reload the page to see new datasets in the dashboard")
-            
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown("### 📊 Registered Datasets")
-
-        if st.session_state.active_datasets:
-
-            # Make a COPY of keys to avoid mutation issues
-            dataset_names = list(st.session_state.active_datasets.keys())
-
-            for dataset_name in dataset_names:
-                data = st.session_state.active_datasets[dataset_name]
-                df = data['dataframe'] if isinstance(data, dict) else data
-                field = data.get('field', 'Unknown') if isinstance(data, dict) else 'Unknown'
-
-                with st.expander(f"🔍 {dataset_name} [{field}]", expanded=False):
-
-                    # --- HEADER ROW ---
-                    h1, h2, h3 = st.columns([4, 2, 1])
-
-                    h1.markdown(f"**{dataset_name}**")
-                    h2.markdown(f"**Rows:** {len(df):,}")
-
-                    # 🔥 DELETE BUTTON (THIS WILL SHOW)
-                    if h3.button("🗑 Delete", key=f"delete_{dataset_name}"):
-                        try:
-                            delete_dataset(dataset_name)
-                            st.success(f"Deleted `{dataset_name}`")
-                            st.session_state.pop("selected_dataset", None)
-                            st.rerun()
-
-                            if not st.session_state.active_datasets:
-                                st.info("All datasets deleted. Upload new data to continue.")
-
-                        except Exception as e:
-                            st.error(str(e))
-
-                    st.divider()
-
-                    # --- DETAILS ---
-                    st.markdown("**Columns:**")
-                    st.code(", ".join(df.columns.tolist()))
-
-                    st.markdown("**Preview (Top 10 rows)**")
-                    st.dataframe(df.head(10), width='stretch')
-
-        else:
-            st.info("No custom datasets uploaded yet. Upload files above to get started.")
-
-with tab4:
     st.markdown("## 🔍 AI Analytics")
     st.markdown("Ask natural language questions and get answers based on your data using intelligent query planning.")
     
@@ -504,9 +338,9 @@ with tab4:
                 st.session_state.duckdb_conn = None
             
             # Load data into DuckDB
-            with st.spinner("📊 Initializing DuckDB tables..."):
+            with st.spinner("📊 Initializing DuckDB tables from Azure SQL..."):
                 try:
-                    conn = initialize_duckdb_from_datasets()
+                    conn = initialize_duckdb_from_azure_datasets()  # Changed function name
                     st.session_state.duckdb_conn = conn
                         
                 except Exception as e:

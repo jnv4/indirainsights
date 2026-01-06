@@ -1,39 +1,255 @@
+# =========================
+# Standard Library
+# =========================
+import os
+import io
+import json
+import math
+import base64
+import gzip
+import tempfile
+import re
+from io import StringIO, BytesIO
+from datetime import datetime
+from html import escape
+
+# =========================
+# Third-Party Libraries
+# =========================
 import streamlit as st
 import pandas as pd
-import requests
-import os
-from io import StringIO, BytesIO
-from dotenv import load_dotenv
-import duckdb
-import google.generativeai as genai
-import json
-from supabase import create_client, Client
-from datetime import datetime
-import openpyxl
-import math
 import numpy as np
+import requests
+import duckdb
+import openpyxl
+from dotenv import load_dotenv
+from supabase import create_client, Client
+import google.generativeai as genai
+import pyodbc
+# =========================
+# PDF / Report Generation (ReportLab)
+# =========================
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
-from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_CENTER
-import base64
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Image as RLImage,
+    Table,
+    TableStyle,
+    PageBreak
+)
+
+# =========================
+# HTML / Markdown Parsing
+# =========================
 from markdown import markdown
 from bs4 import BeautifulSoup
-import tempfile
+
 load_dotenv()
-AVAILABLE_FIELDS = ["Call Center", "Website", "CRM", "Competitors"]
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = "marketing-cleaned"
 METADATA_TABLE = "dataset_registry"
 
-supabase_client = None
+# Replace Supabase constants with Azure SQL constants
+AZURE_SERVER = os.getenv("server")
+AZURE_DATABASE = os.getenv("database")
+AZURE_USERNAME = "ChatAgent"
+AZURE_PASSWORD = os.getenv("password")
+AZURE_DRIVER = os.getenv("driver")
 
-if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    raise RuntimeError("SUPABASE_URL or SUPABASE_SERVICE_KEY missing")
+def get_azure_connection():
+    """Create Azure SQL connection"""
+    try:
+        conn = pyodbc.connect(
+            f"DRIVER={AZURE_DRIVER};"
+            f"SERVER={AZURE_SERVER};"
+            f"DATABASE={AZURE_DATABASE};"
+            f"UID={AZURE_USERNAME};"
+            f"PWD={AZURE_PASSWORD};"
+            "Encrypt=yes;"
+            "TrustServerCertificate=yes;"
+            "Connection Timeout=30;"
+        )
+        return conn
+    except Exception as e:
+        raise Exception(f"Azure SQL connection failed: {str(e)}")
 
-supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+def get_azure_tables():
+    """Get list of specific tables to load from Azure SQL"""
+    # Define specific tables to load
+    ALLOWED_TABLES = [
+        "iivf_fact_transactions",
+        "IIVF_FACT_PAYMENTS",
+        "IIVF_Master_BillingServiceMainGroup",
+        "IIVF_Fact_Payments"
+    ]
+    
+    try:
+        conn = get_azure_connection()
+        cursor = conn.cursor()
+        
+        # Verify each table exists and is accessible
+        accessible_tables = []
+        for table in ALLOWED_TABLES:
+            try:
+                cursor.execute(f"SELECT TOP 1 1 FROM {table}")
+                cursor.fetchone()
+                accessible_tables.append(table)
+            except Exception as e:
+                st.warning(f"⚠️ Table {table} not accessible: {str(e)}")
+        
+        cursor.close()
+        conn.close()
+        
+        return accessible_tables
+    except Exception as e:
+        raise Exception(f"Failed to fetch tables: {str(e)}")
+
+def load_azure_table_to_dataframe(table_name: str, sample_size: int = None):
+    """Load Azure SQL table into pandas DataFrame"""
+    try:
+        conn = get_azure_connection()
+        
+        query = f"SELECT * FROM {table_name}"
+        if sample_size:
+            query = f"SELECT TOP {sample_size} * FROM {table_name}"
+        
+        df = pd.read_sql(query, conn)
+        conn.close()
+        
+        return df
+    except Exception as e:
+        raise Exception(f"Failed to load table {table_name}: {str(e)}")
+
+def get_azure_table_schema(table_name: str):
+    """Get schema information for a specific Azure SQL table"""
+    try:
+        conn = get_azure_connection()
+        cursor = conn.cursor()
+        
+        # Get column information
+        cursor.execute(f"""
+            SELECT 
+                COLUMN_NAME,
+                DATA_TYPE,
+                CHARACTER_MAXIMUM_LENGTH,
+                IS_NULLABLE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = '{table_name}'
+            ORDER BY ORDINAL_POSITION
+        """)
+        
+        columns = []
+        for row in cursor.fetchall():
+            columns.append({
+                "name": row[0],
+                "type": row[1],
+                "max_length": row[2],
+                "nullable": row[3] == 'YES'
+            })
+        
+        # Get row count
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        row_count = cursor.fetchone()[0]
+        
+        cursor.close()
+        conn.close()
+        
+        return {
+            "columns": columns,
+            "row_count": row_count
+        }
+    except Exception as e:
+        raise Exception(f"Failed to get schema for {table_name}: {str(e)}")
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_all_azure_tables():
+    """Load all accessible Azure SQL tables into session state"""
+    datasets = {}
+    
+    try:
+        tables = get_azure_tables()
+        
+        for table_name in tables:
+            try:
+                # Load table (sample first 10000 rows for performance)
+                df = load_azure_table_to_dataframe(table_name, sample_size=10000)
+                
+                # Clean and optimize DataFrame
+                df_clean = clean_dataframe(df)
+                
+                datasets[table_name] = {
+                    'dataframe': df_clean,
+                    'field': 'Azure SQL',  # You can categorize differently if needed
+                    'source': 'azure_sql'
+                }
+                
+            except Exception as e:
+                st.warning(f"Could not load table {table_name}: {str(e)}")
+                continue
+        
+        return datasets
+    
+    except Exception as e:
+        st.error(f"Failed to load Azure tables: {str(e)}")
+        return {}
+
+@st.cache_data(show_spinner=False)
+def get_schema_info_from_azure():
+    """Get enhanced schema info from Azure SQL tables"""
+    schema_info = {}
+    
+    if st.session_state.active_datasets:
+        for name, data in st.session_state.active_datasets.items():
+            try:
+                df = data['dataframe']
+                
+                # Get enhanced schema
+                enhanced_schema = extract_schema(df)
+                
+                schema_info[name] = {
+                    "columns": df.columns.tolist(),
+                    "dtypes": df.dtypes.astype(str).to_dict(),
+                    "sample_values": {col: df[col].dropna().unique()[:5].tolist() for col in df.columns},
+                    "row_count": len(df),
+                    "field": data.get('field', 'Azure SQL'),
+                    "dataset_role": enhanced_schema.get("dataset_role", "unknown"),
+                    "business_entity": enhanced_schema.get("business_entity", "Other"),
+                    "primary_keys": enhanced_schema.get("primary_keys", []),
+                    "foreign_key_candidates": enhanced_schema.get("foreign_key_candidates", []),
+                    "time_columns": enhanced_schema.get("time_columns", [])
+                }
+            except Exception as e:
+                st.error(f"Error loading schema for {name}: {e}")
+    
+    return schema_info
+
+def initialize_duckdb_from_azure_datasets():
+    """Initialize DuckDB connection and load all Azure SQL datasets as tables"""
+    import duckdb
+    
+    conn = duckdb.connect(database=':memory:')
+    
+    if not st.session_state.get("active_datasets"):
+        raise Exception("No datasets available")
+    
+    for dataset_name, data in st.session_state.active_datasets.items():
+        df = data['dataframe'] if isinstance(data, dict) else data
+        
+        # Sanitize table name for DuckDB
+        table_name = dataset_name.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+        table_name = ''.join(c for c in table_name if c.isalnum() or c == '_')
+        
+        # Register DataFrame as DuckDB table
+        conn.register(table_name, df)
+    
+    return conn
 
 @st.cache_data(show_spinner=False)
 def load_csv(url: str) -> pd.DataFrame:
@@ -230,244 +446,6 @@ def make_json_safe(obj):
     else:
         return obj
 
-import gzip
-import io
-
-def compress_dataframe(df):
-    """Compress DataFrame to reduce upload size"""
-    try:
-        # Convert to CSV
-        csv_buffer = StringIO()
-        df.to_csv(csv_buffer, index=False)
-        csv_data = csv_buffer.getvalue().encode('utf-8')
-        
-        # Compress with gzip
-        compressed_buffer = BytesIO()
-        with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=9) as gz_file:
-            gz_file.write(csv_data)
-        
-        compressed_data = compressed_buffer.getvalue()
-        
-        # Calculate compression ratio
-        original_size = len(csv_data)
-        compressed_size = len(compressed_data)
-        ratio = (1 - compressed_size / original_size) * 100
-        
-        return compressed_data, original_size, compressed_size, ratio
-    
-    except Exception as e:
-        raise Exception(f"Compression failed: {str(e)}")
-
-def upload_to_supabase(bucket, path, content):
-    """Upload content to Supabase Storage with compression and chunking support"""
-    if not supabase_client:
-        raise Exception("Supabase client not initialized")
-    
-    try:
-        # Convert content to DataFrame if needed
-        if isinstance(content, pd.DataFrame):
-            df = content
-        else:
-            # If already bytes/string, convert to DataFrame first
-            if isinstance(content, str):
-                file_content = content.encode('utf-8')
-            elif isinstance(content, BytesIO):
-                file_content = content.getvalue()
-            elif isinstance(content, bytes):
-                file_content = content
-            else:
-                raise ValueError(f"Unsupported content type: {type(content)}")
-            
-            # Try to parse as CSV
-            try:
-                df = pd.read_csv(BytesIO(file_content))
-            except:
-                raise ValueError("Could not parse content as DataFrame")
-        
-        # Check if compression is needed
-        csv_buffer = StringIO()
-        df.to_csv(csv_buffer, index=False)
-        original_csv = csv_buffer.getvalue().encode('utf-8')
-        original_size = len(original_csv)
-        
-        # Size limits
-        API_LIMIT = 50 * 1024 * 1024  # 50MB API limit
-        CHUNK_THRESHOLD = 40 * 1024 * 1024  # Start chunking at 40MB
-        
-        # If file is too large, try compression first
-        if original_size > CHUNK_THRESHOLD:
-            st.info(f"File size: {original_size / (1024*1024):.2f} MB - attempting compression...")
-            
-            compressed_data, orig_size, comp_size, ratio = compress_dataframe(df)
-            
-            st.info(f"Compressed: {orig_size/(1024*1024):.2f} MB → {comp_size/(1024*1024):.2f} MB ({ratio:.1f}% reduction)")
-            
-            # If compressed size is within limits, upload compressed
-            if comp_size < API_LIMIT:
-                # Change path to indicate compressed file
-                compressed_path = path.replace('.csv', '.csv.gz')
-                
-                # Delete existing files (both compressed and uncompressed)
-                try:
-                    supabase_client.storage.from_(bucket).remove([path])
-                except:
-                    pass
-                try:
-                    supabase_client.storage.from_(bucket).remove([compressed_path])
-                except:
-                    pass
-                
-                # Upload compressed file
-                result = supabase_client.storage.from_(bucket).upload(
-                    path=compressed_path,
-                    file=compressed_data,
-                    file_options={
-                        "content-type": "application/gzip",
-                        "upsert": "true"
-                    }
-                )
-                
-                st.success(f"✅ Uploaded compressed file: {compressed_path}")
-                return result
-            else:
-                # Even compressed is too large - need to split dataset
-                st.warning(f"File is too large even after compression ({comp_size/(1024*1024):.2f} MB)")
-                raise Exception(
-                    f"File too large for upload ({comp_size/(1024*1024):.2f} MB after compression). "
-                    f"Please split your dataset into smaller files (recommended: <100K rows per file) "
-                    f"or upload directly through Supabase dashboard."
-                )
-        
-        # File is small enough - upload uncompressed
-        else:
-            file_content = original_csv
-            
-            # Validate final size
-            if len(file_content) > API_LIMIT:
-                raise Exception(
-                    f"File too large ({len(file_content)/(1024*1024):.2f} MB). "
-                    f"Maximum size: {API_LIMIT/(1024*1024):.2f} MB. "
-                    f"Please split your dataset or upload through Supabase dashboard."
-                )
-            
-            # Delete existing file
-            try:
-                supabase_client.storage.from_(bucket).remove([path])
-            except:
-                pass
-            
-            # Upload with proper options
-            result = supabase_client.storage.from_(bucket).upload(
-                path=path,
-                file=file_content,
-                file_options={
-                    "content-type": "text/csv",
-                    "upsert": "true"
-                }
-            )
-            
-            return result
-    
-    except Exception as e:
-        error_msg = str(e)
-        if "Payload too large" in error_msg or "413" in error_msg:
-            raise Exception(
-                "File size exceeds API limits. Solutions:\n"
-                "1. Split dataset into smaller files (<100K rows each)\n"
-                "2. Upload directly through Supabase dashboard\n"
-                "3. Use Supabase CLI for large files"
-            )
-        elif "Bucket not found" in error_msg:
-            raise Exception(f"Storage bucket '{bucket}' not found. Please create it in Supabase dashboard.")
-        elif "Invalid JWT" in error_msg or "JWT" in error_msg:
-            raise Exception("Authentication failed. Please check SUPABASE_SERVICE_KEY environment variable.")
-        else:
-            raise Exception(f"Upload failed: {error_msg}")
-
-def load_registered_datasets():
-    """Load datasets from Supabase with support for compressed files"""
-    if not supabase_client:
-        return None
-    
-    try:
-        # Fetch all registered datasets
-        result = supabase_client.table(METADATA_TABLE).select("*").execute()
-        
-        if not result.data:
-            return None
-        
-        datasets = {}
-        failed_loads = []
-        
-        for record in result.data:
-            dataset_name = record["dataset_name"]
-            file_name = record["file_name"]
-            bucket = record["bucket"]
-            field = record.get("field", "Unknown")
-            
-            try:
-                # Try compressed version first, then uncompressed
-                file_data = None
-                is_compressed = False
-                
-                # Check if file is compressed
-                if file_name.endswith('.csv.gz'):
-                    is_compressed = True
-                else:
-                    # Try to load compressed version
-                    try:
-                        file_data = supabase_client.storage.from_(bucket).download(file_name + '.gz')
-                        is_compressed = True
-                    except:
-                        pass
-                
-                # If no compressed version, load normal
-                if file_data is None:
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        try:
-                            file_data = supabase_client.storage.from_(bucket).download(file_name)
-                            break
-                        except Exception as download_error:
-                            if attempt == max_retries - 1:
-                                raise download_error
-                            import time
-                            time.sleep(1)
-                
-                if file_data is None:
-                    raise Exception("Failed to download file")
-                
-                # Decompress if needed
-                if is_compressed:
-                    with gzip.GzipFile(fileobj=BytesIO(file_data)) as gz_file:
-                        file_data = gz_file.read()
-                
-                # Load into DataFrame
-                df = pd.read_csv(BytesIO(file_data))
-                
-                # Validate DataFrame
-                if df.empty:
-                    st.warning(f"Dataset {dataset_name} is empty")
-                    continue
-                
-                datasets[dataset_name] = {
-                    'dataframe': df,
-                    'field': field
-                }
-                
-            except Exception as e:
-                failed_loads.append(f"{dataset_name}: {str(e)}")
-                continue
-        
-        if failed_loads:
-            st.warning(f"Could not load {len(failed_loads)} dataset(s):\n" + "\n".join(failed_loads))
-        
-        return datasets if datasets else None
-    
-    except Exception as e:
-        st.warning(f"Error loading registered datasets: {str(e)}")
-        return None
-
 def clean_dataframe(df):
     """Clean and normalize DataFrame with aggressive size optimization"""
     df_clean = df.copy()
@@ -542,87 +520,6 @@ def clean_dataframe(df):
     
     return df_clean
 
-def register_dataset(metadata):
-    """Register dataset metadata in Supabase table with validation"""
-    if not supabase_client:
-        raise Exception("Supabase client not initialized")
-    
-    try:
-        # Validate required fields
-        required_fields = ["dataset_name", "file_name", "bucket", "schema", "row_count", "uploaded_at"]
-        for field in required_fields:
-            if field not in metadata:
-                raise ValueError(f"Missing required field: {field}")
-        
-        # Ensure schema is JSON-serializable
-        metadata["schema"] = make_json_safe(metadata["schema"])
-        
-        # Validate row_count is integer
-        if not isinstance(metadata["row_count"], int):
-            metadata["row_count"] = int(metadata["row_count"])
-        
-        # Check if dataset already exists
-        existing = supabase_client.table(METADATA_TABLE).select("*").eq(
-            "dataset_name", metadata["dataset_name"]
-        ).execute()
-        
-        if existing.data:
-            # Update existing record
-            update_data = {
-                "file_name": metadata["file_name"],
-                "bucket": metadata["bucket"],
-                "schema": metadata["schema"],
-                "row_count": metadata["row_count"],
-                "uploaded_at": metadata["uploaded_at"],
-                "field": metadata.get("field", "Unknown")
-            }
-            
-            result = supabase_client.table(METADATA_TABLE).update(
-                update_data
-            ).eq("dataset_name", metadata["dataset_name"]).execute()
-        else:
-            # Insert new record
-            result = supabase_client.table(METADATA_TABLE).insert(metadata).execute()
-        
-        return result
-    
-    except Exception as e:
-        error_msg = str(e)
-        if "violates foreign key constraint" in error_msg:
-            raise Exception("Database constraint violation. Please check your data integrity.")
-        elif "duplicate key value" in error_msg:
-            raise Exception(f"Dataset '{metadata.get('dataset_name')}' already exists.")
-        else:
-            raise Exception(f"Registration failed: {error_msg}")
- 
-def delete_dataset(dataset_name: str):
-    if not supabase_client:
-        raise Exception("Supabase not configured")
-
-    record = supabase_client.table(METADATA_TABLE)\
-        .select("file_name, bucket")\
-        .eq("dataset_name", dataset_name)\
-        .execute()
-
-    if not record.data:
-        raise Exception("Dataset not found")
-
-    file_name = record.data[0]["file_name"]
-    bucket = record.data[0]["bucket"]
-
-    # Delete from storage
-    supabase_client.storage.from_(bucket).remove([file_name])
-
-    # Delete metadata
-    supabase_client.table(METADATA_TABLE)\
-        .delete()\
-        .eq("dataset_name", dataset_name)\
-        .execute()
-
-    # Delete from session
-    if dataset_name in st.session_state.active_datasets:
-        st.session_state.active_datasets.pop(dataset_name)
-
 def check_password():
     """Returns `True` if the user had the correct password."""
     
@@ -655,7 +552,7 @@ def check_password():
 def identify_relevant_files(user_query: str, api_key: str) -> list:
     try:
         genai.configure(api_key=api_key)
-        schema_info = get_schema_info()
+        schema_info = get_schema_info_from_azure()  # Changed function name
         schema_description = "Available datasets:\n\n"
         for name, info in schema_info.items():
             schema_description += f"### {name}\n"
@@ -1519,18 +1416,6 @@ def create_pdf_report(user_question, explanation, result_df, ai_plot_response=No
     
     buffer.seek(0)
     return buffer
-
-from io import BytesIO
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.units import inch
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-from reportlab.lib import colors
-from bs4 import BeautifulSoup
-import re
-from html import escape
-
 
 def create_markdown_pdf_report(user_query, markdown_response):
     """
