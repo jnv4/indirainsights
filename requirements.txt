@@ -11,3 +11,4 @@ pyodbc
 reportlab
 markdown
 beautifulsoup4
+pymssql

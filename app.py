@@ -82,6 +82,7 @@ if 'active_tab' not in st.session_state:
     st.session_state.active_tab = 0
 
 tab1, tab2, tab3= st.tabs(["📈 Dashboard", "📈AI Report", "🔍 AI Analytics"])
+
 with tab1:
     st.sidebar.title("📊 Azure SQL Tables")
 
@@ -471,3 +472,4 @@ with tab3:
                     )
                 except Exception as pdf_error:
                     st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
+                    

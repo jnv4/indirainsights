@@ -1,6 +1,3 @@
-# =========================
-# Standard Library
-# =========================
 import os
 import io
 import json
@@ -12,10 +9,6 @@ import re
 from io import StringIO, BytesIO
 from datetime import datetime
 from html import escape
-
-# =========================
-# Third-Party Libraries
-# =========================
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -26,9 +19,6 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 import google.generativeai as genai
 import pyodbc
-# =========================
-# PDF / Report Generation (ReportLab)
-# =========================
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
@@ -43,10 +33,6 @@ from reportlab.platypus import (
     TableStyle,
     PageBreak
 )
-
-# =========================
-# HTML / Markdown Parsing
-# =========================
 from markdown import markdown
 from bs4 import BeautifulSoup
 
@@ -56,29 +42,24 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = "marketing-cleaned"
 METADATA_TABLE = "dataset_registry"
 
-# Replace Supabase constants with Azure SQL constants
 AZURE_SERVER = os.getenv("server")
 AZURE_DATABASE = os.getenv("database")
 AZURE_USERNAME = "ChatAgent"
 AZURE_PASSWORD = os.getenv("password")
 AZURE_DRIVER = os.getenv("driver")
 
+import pymssql
+
 def get_azure_connection():
-    """Create Azure SQL connection"""
-    try:
-        conn = pyodbc.connect(
-            f"DRIVER={AZURE_DRIVER};"
-            f"SERVER={AZURE_SERVER};"
-            f"DATABASE={AZURE_DATABASE};"
-            f"UID={AZURE_USERNAME};"
-            f"PWD={AZURE_PASSWORD};"
-            "Encrypt=yes;"
-            "TrustServerCertificate=yes;"
-            "Connection Timeout=30;"
-        )
-        return conn
-    except Exception as e:
-        raise Exception(f"Azure SQL connection failed: {str(e)}")
+    return pymssql.connect(
+        server=AZURE_SERVER.replace("tcp:", "").replace(",1433", ""),
+        user=AZURE_USERNAME,
+        password=AZURE_PASSWORD,
+        database=AZURE_DATABASE,
+        port=1433,
+        login_timeout=30,
+        timeout=30
+    )
 
 def get_azure_tables():
     """Get list of specific tables to load from Azure SQL"""
