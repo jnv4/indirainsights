@@ -61,36 +61,57 @@ def get_azure_connection():
         timeout=30
     )
 
-def get_azure_tables():
-    """Get list of specific tables to load from Azure SQL"""
-    # Define specific tables to load
-    ALLOWED_TABLES = [
-        "iivf_fact_transactions",
-        "IIVF_FACT_PAYMENTS",
-        "IIVF_Master_BillingServiceMainGroup",
-        "IIVF_Fact_Payments"
-    ]
-    
+def get_all_azure_tables():
+    """Get list of ALL available tables from Azure SQL database"""
     try:
         conn = get_azure_connection()
         cursor = conn.cursor()
         
-        # Verify each table exists and is accessible
-        accessible_tables = []
-        for table in ALLOWED_TABLES:
-            try:
-                cursor.execute(f"SELECT TOP 1 1 FROM {table}")
-                cursor.fetchone()
-                accessible_tables.append(table)
-            except Exception as e:
-                st.warning(f"⚠️ Table {table} not accessible: {str(e)}")
+        # Query to get all user tables
+        cursor.execute("""
+            SELECT TABLE_NAME 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_TYPE = 'BASE TABLE'
+            ORDER BY TABLE_NAME
+        """)
+        
+        all_tables = [row[0] for row in cursor.fetchall()]
         
         cursor.close()
         conn.close()
         
-        return accessible_tables
+        return all_tables
     except Exception as e:
         raise Exception(f"Failed to fetch tables: {str(e)}")
+
+def load_selected_azure_tables(selected_tables: list):
+    """Load only the selected Azure SQL tables into session state"""
+    datasets = {}
+    
+    try:
+        for table_name in selected_tables:
+            try:
+                # Load table (sample first 10000 rows for performance)
+                df = load_azure_table_to_dataframe(table_name, sample_size=10000)
+                
+                # Clean and optimize DataFrame
+                df_clean = clean_dataframe(df)
+                
+                datasets[table_name] = {
+                    'dataframe': df_clean,
+                    'field': 'Azure SQL',
+                    'source': 'azure_sql'
+                }
+                
+            except Exception as e:
+                st.warning(f"Could not load table {table_name}: {str(e)}")
+                continue
+        
+        return datasets
+    
+    except Exception as e:
+        st.error(f"Failed to load Azure tables: {str(e)}")
+        return {}
 
 def load_azure_table_to_dataframe(table_name: str, sample_size: int = None):
     """Load Azure SQL table into pandas DataFrame"""
@@ -545,15 +566,43 @@ def identify_relevant_files(user_query: str, api_key: str) -> list:
         
         intent_model = genai.GenerativeModel('gemini-2.5-flash')
         
-        intent_prompt = f"""You are a data analyst. Based on the user's question, identify which datasets are needed to answer it.
+        intent_prompt = f"""You are a senior data analyst responsible for selecting datasets required to answer a user’s question.
 
-                        {schema_description}
+INPUTS:
+- Available datasets and schema:
+{schema_description}
 
-                        User question: {user_query}
+- User question:
+{user_query}
 
-                        Return ONLY a JSON array of dataset names that are needed. For example: ["CRM Leads", "Region", "Competition"]
+TASK:
+Identify which datasets are required to answer the user’s question.
 
-                        Be selective - only include datasets that are directly relevant to answering the question."""
+RULES (STRICT):
+1. You MUST return at least one dataset name.
+2. You must NEVER return an empty array.
+3. Be inclusive rather than exclusive:
+   - If a dataset might be even slightly relevant, INCLUDE it.
+4. If the question is vague, broad, exploratory, or requires overall business understanding,
+   RETURN ALL AVAILABLE DATASETS.
+5. For analytical or comparative questions, include all datasets that could reasonably
+   contribute to metrics, filters, joins, or context.
+6. Use dataset names EXACTLY as they appear in the schema.
+7. Do NOT explain your reasoning.
+8. Do NOT add any extra text.
+
+OUTPUT FORMAT:
+Return ONLY a valid JSON array of dataset names.
+
+EXAMPLES:
+- Specific question → ["CRM Leads", "Footfall"]
+- Revenue trend by region → ["Revenue", "Region"]
+- Vague or exploratory question → ALL datasets from the schema
+
+REMEMBER:
+❌ Never return []
+✅ When in doubt, include more datasets
+"""
                                 
         response = intent_model.generate_content(intent_prompt)
         

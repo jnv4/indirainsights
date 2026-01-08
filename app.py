@@ -36,8 +36,10 @@ from utils import (
     load_csv,
     initialize_duckdb_from_azure_datasets,
     get_duckdb_tables,
-    load_all_azure_tables
+    get_all_azure_tables,
+    load_selected_azure_tables
 )
+
 load_dotenv()
 
 st.set_page_config(
@@ -53,21 +55,41 @@ load_css("styles.css")
 if not check_password():
     st.stop()
 
-if 'datasets_loaded' not in st.session_state:
-    st.session_state.datasets_loaded = False
-    st.session_state.active_datasets = {}
+# Default tables to select (case-insensitive matching)
+DEFAULT_TABLES = [
+    "iivf_fact_transactions",
+    "IIVF_Master_BillingServiceMainGroup",
+    "IIVF_Fact_Payments"
+]
 
-if not st.session_state.datasets_loaded:
-    with st.spinner("Loading Azure SQL tables..."):
-        azure_datasets = load_all_azure_tables()
-        
-        if azure_datasets:
-            st.session_state.active_datasets = azure_datasets
-            st.success(f"✅ Loaded {len(azure_datasets)} tables from Azure SQL")
-        else:
-            st.warning("⚠️ No Azure SQL tables loaded. Check your connection settings.")
-        
-        st.session_state.datasets_loaded = True
+# Initialize session state variables
+if 'available_tables' not in st.session_state:
+    st.session_state.available_tables = []
+if 'selected_tables' not in st.session_state:
+    st.session_state.selected_tables = []
+if 'active_datasets' not in st.session_state:
+    st.session_state.active_datasets = {}
+if 'tables_fetched' not in st.session_state:
+    st.session_state.tables_fetched = False
+
+# Fetch available tables only once
+if not st.session_state.tables_fetched:
+    with st.spinner("Fetching available tables from Azure SQL..."):
+        from utils import get_all_azure_tables
+        try:
+            st.session_state.available_tables = get_all_azure_tables()
+            
+            # Set default selected tables with case-insensitive matching
+            available_lower = {table.lower(): table for table in st.session_state.available_tables}
+            st.session_state.selected_tables = [
+                available_lower[table.lower()] 
+                for table in DEFAULT_TABLES 
+                if table.lower() in available_lower
+            ]
+            
+            st.session_state.tables_fetched = True
+        except Exception as e:
+            st.error(f"Failed to fetch tables: {str(e)}")
 
 if 'gemini_api_key' not in st.session_state:
     env_api_key = os.getenv('GEMINI_API_KEY')
@@ -85,27 +107,75 @@ tab1, tab2, tab3= st.tabs(["📈 Dashboard", "📈AI Report", "🔍 AI Analytics
 
 with tab1:
     st.sidebar.title("📊 Azure SQL Tables")
-
-    registered_datasets = st.session_state.active_datasets
-
-    if not registered_datasets:
-        st.sidebar.info("🔭 No datasets available")
-        st.info("No Azure SQL tables loaded. Check your database connection.")
+    
+    if not st.session_state.available_tables:
+        st.sidebar.warning("⚠️ No tables available from Azure SQL")
+        st.info("Could not fetch tables from Azure SQL. Please check your connection.")
     else:
-        # List all tables in sidebar
-        st.sidebar.markdown("**Available Tables:**")
-        table_names = list(registered_datasets.keys())
+        st.sidebar.markdown(f"**Available Tables:** {len(st.session_state.available_tables)}")
         
-        selected_table = st.sidebar.selectbox(
+        # Multi-select for tables (limit to 20)
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**Select Tables to Load** (Max 20)")
+        
+        selected = st.sidebar.multiselect(
+            "Choose tables:",
+            options=st.session_state.available_tables,
+            default=st.session_state.selected_tables,
+            max_selections=20,
+            key="table_selector"
+        )
+        
+        st.session_state.selected_tables = selected
+        
+        # Action buttons
+        col1, col2 = st.sidebar.columns(2)
+        
+        load_btn = col1.button(
+            "🔄 Load Data",
+            disabled=len(selected) == 0,
+            width='stretch'
+        )
+        
+        clear_btn = col2.button(
+            "❌ Clear All",
+            width='stretch'
+        )
+        
+        if clear_btn:
+            st.session_state.selected_tables = []
+            st.session_state.active_datasets = {}
+            st.rerun()
+        
+        if load_btn and selected:
+            with st.spinner(f"Loading {len(selected)} tables..."):
+                loaded_datasets = load_selected_azure_tables(selected)
+                st.session_state.active_datasets = loaded_datasets
+                st.sidebar.success(f"✅ Loaded {len(loaded_datasets)} tables")
+                st.rerun()
+        
+        st.sidebar.markdown("---")
+        st.sidebar.markdown(f"**Currently Loaded:** {len(st.session_state.active_datasets)} tables")
+    
+    # Main content area
+    if not st.session_state.active_datasets:
+        st.info("👈 Please select and load tables from the sidebar to view data")
+    else:
+        # List loaded tables
+        st.markdown("## 📊 Loaded Tables")
+        
+        table_names = list(st.session_state.active_datasets.keys())
+        
+        selected_table = st.selectbox(
             "Select a table to view",
             table_names,
-            key="selected_table"
+            key="selected_table_view"
         )
         
         if selected_table:
             df = get_dataset(selected_table)
             
-            st.markdown(f"## 📊 {selected_table}")
+            st.markdown(f"### 📋 {selected_table}")
             
             # Basic metrics
             total_records = len(df)
@@ -119,11 +189,11 @@ with tab1:
             st.divider()
             
             # Show data preview
-            st.markdown("### 📋 Data Preview")
+            st.markdown("#### 📋 Data Preview")
             st.dataframe(df.head(100), width='stretch')
             
             # Column info
-            with st.expander("📝 Column Information"):
+            with st.expander("🔍 Column Information"):
                 col_info = pd.DataFrame({
                     'Column': df.columns,
                     'Type': df.dtypes.astype(str),
@@ -171,9 +241,7 @@ with tab2:
 
                     # Filter to only existing tables
                     relevant_files = [t for t in relevant_files if t in all_tables]
-                    st.info(f"Identified {relevant_files} relevant tables for the analysis.")
                     if not relevant_files:
-                        st.warning("No relevant tables identified. Using all available tables.")
                         relevant_files = all_tables
 
                     relevant_data = {}
@@ -472,4 +540,3 @@ with tab3:
                     )
                 except Exception as pdf_error:
                     st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
-                    
