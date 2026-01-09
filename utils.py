@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 import google.generativeai as genai
 import pyodbc
+import pymssql
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
@@ -41,14 +42,11 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = "marketing-cleaned"
 METADATA_TABLE = "dataset_registry"
-
 AZURE_SERVER = os.getenv("server")
 AZURE_DATABASE = os.getenv("database")
 AZURE_USERNAME = "ChatAgent"
 AZURE_PASSWORD = os.getenv("password")
 AZURE_DRIVER = os.getenv("driver")
-
-import pymssql
 
 def get_azure_connection():
     return pymssql.connect(
@@ -129,79 +127,6 @@ def load_azure_table_to_dataframe(table_name: str, sample_size: int = None):
     except Exception as e:
         raise Exception(f"Failed to load table {table_name}: {str(e)}")
 
-def get_azure_table_schema(table_name: str):
-    """Get schema information for a specific Azure SQL table"""
-    try:
-        conn = get_azure_connection()
-        cursor = conn.cursor()
-        
-        # Get column information
-        cursor.execute(f"""
-            SELECT 
-                COLUMN_NAME,
-                DATA_TYPE,
-                CHARACTER_MAXIMUM_LENGTH,
-                IS_NULLABLE
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = '{table_name}'
-            ORDER BY ORDINAL_POSITION
-        """)
-        
-        columns = []
-        for row in cursor.fetchall():
-            columns.append({
-                "name": row[0],
-                "type": row[1],
-                "max_length": row[2],
-                "nullable": row[3] == 'YES'
-            })
-        
-        # Get row count
-        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-        row_count = cursor.fetchone()[0]
-        
-        cursor.close()
-        conn.close()
-        
-        return {
-            "columns": columns,
-            "row_count": row_count
-        }
-    except Exception as e:
-        raise Exception(f"Failed to get schema for {table_name}: {str(e)}")
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def load_all_azure_tables():
-    """Load all accessible Azure SQL tables into session state"""
-    datasets = {}
-    
-    try:
-        tables = get_azure_tables()
-        
-        for table_name in tables:
-            try:
-                # Load table (sample first 10000 rows for performance)
-                df = load_azure_table_to_dataframe(table_name, sample_size=10000)
-                
-                # Clean and optimize DataFrame
-                df_clean = clean_dataframe(df)
-                
-                datasets[table_name] = {
-                    'dataframe': df_clean,
-                    'field': 'Azure SQL',  # You can categorize differently if needed
-                    'source': 'azure_sql'
-                }
-                
-            except Exception as e:
-                st.warning(f"Could not load table {table_name}: {str(e)}")
-                continue
-        
-        return datasets
-    
-    except Exception as e:
-        st.error(f"Failed to load Azure tables: {str(e)}")
-        return {}
-
 @st.cache_data(show_spinner=False)
 def get_schema_info_from_azure():
     """Get enhanced schema info from Azure SQL tables"""
@@ -252,12 +177,6 @@ def initialize_duckdb_from_azure_datasets():
         conn.register(table_name, df)
     
     return conn
-
-@st.cache_data(show_spinner=False)
-def load_csv(url: str) -> pd.DataFrame:
-    r = requests.get(url)
-    r.raise_for_status()
-    return pd.read_csv(StringIO(r.text))
 
 def extract_schema(df):
     """Extract enhanced schema with dataset intelligence"""
@@ -383,51 +302,6 @@ def get_schema_info():
 
 def has_datasets() -> bool:
     return bool(st.session_state.get("active_datasets"))
-
-def read_uploaded_file(file):
-    file_ext = file.name.split('.')[-1].lower()
-
-    try:
-        # ---------------- CSV ----------------
-        if file_ext == 'csv':
-            df = pd.read_csv(file)
-            return {file.name.replace('.csv', ''): df}
-
-        # ---------------- EXCEL (ROBUST) ----------------
-        elif file_ext in ['xlsx', 'xls']:
-            try:
-                # Try modern Excel first
-                excel_file = pd.ExcelFile(file, engine="openpyxl")
-            except Exception:
-                # Fallback to old Excel
-                file.seek(0)
-                excel_file = pd.ExcelFile(file, engine="xlrd")
-
-            sheets = {}
-            for sheet_name in excel_file.sheet_names:
-                sheets[sheet_name] = excel_file.parse(sheet_name)
-
-            return sheets
-
-        # ---------------- JSON ----------------
-        elif file_ext == 'json':
-            content = file.read()
-            data = json.loads(content)
-
-            if isinstance(data, list):
-                df = pd.DataFrame(data)
-            elif isinstance(data, dict):
-                df = pd.DataFrame([data])
-            else:
-                raise ValueError("Invalid JSON structure")
-
-            return {file.name.replace('.json', ''): df}
-
-        else:
-            raise ValueError(f"Unsupported file type: {file_ext}")
-
-    except Exception as e:
-        raise Exception(f"Error reading file {file.name}: {str(e)}")
 
 def make_json_safe(obj):
     """Recursively convert objects to JSON-safe types"""
@@ -568,41 +442,41 @@ def identify_relevant_files(user_query: str, api_key: str) -> list:
         
         intent_prompt = f"""You are a senior data analyst responsible for selecting datasets required to answer a user’s question.
 
-INPUTS:
-- Available datasets and schema:
-{schema_description}
+        INPUTS:
+        - Available datasets and schema:
+        {schema_description}
 
-- User question:
-{user_query}
+        - User question:
+        {user_query}
 
-TASK:
-Identify which datasets are required to answer the user’s question.
+        TASK:
+        Identify which datasets are required to answer the user’s question.
 
-RULES (STRICT):
-1. You MUST return at least one dataset name.
-2. You must NEVER return an empty array.
-3. Be inclusive rather than exclusive:
-   - If a dataset might be even slightly relevant, INCLUDE it.
-4. If the question is vague, broad, exploratory, or requires overall business understanding,
-   RETURN ALL AVAILABLE DATASETS.
-5. For analytical or comparative questions, include all datasets that could reasonably
-   contribute to metrics, filters, joins, or context.
-6. Use dataset names EXACTLY as they appear in the schema.
-7. Do NOT explain your reasoning.
-8. Do NOT add any extra text.
+        RULES (STRICT):
+        1. You MUST return at least one dataset name.
+        2. You must NEVER return an empty array.
+        3. Be inclusive rather than exclusive:
+        - If a dataset might be even slightly relevant, INCLUDE it.
+        4. If the question is vague, broad, exploratory, or requires overall business understanding,
+        RETURN ALL AVAILABLE DATASETS.
+        5. For analytical or comparative questions, include all datasets that could reasonably
+        contribute to metrics, filters, joins, or context.
+        6. Use dataset names EXACTLY as they appear in the schema.
+        7. Do NOT explain your reasoning.
+        8. Do NOT add any extra text.
 
-OUTPUT FORMAT:
-Return ONLY a valid JSON array of dataset names.
+        OUTPUT FORMAT:
+        Return ONLY a valid JSON array of dataset names.
 
-EXAMPLES:
-- Specific question → ["CRM Leads", "Footfall"]
-- Revenue trend by region → ["Revenue", "Region"]
-- Vague or exploratory question → ALL datasets from the schema
+        EXAMPLES:
+        - Specific question → ["CRM Leads", "Footfall"]
+        - Revenue trend by region → ["Revenue", "Region"]
+        - Vague or exploratory question → ALL datasets from the schema
 
-REMEMBER:
-❌ Never return []
-✅ When in doubt, include more datasets
-"""
+        REMEMBER:
+        ❌ Never return []
+        ✅ When in doubt, include more datasets
+        """
                                 
         response = intent_model.generate_content(intent_prompt)
         
@@ -620,27 +494,6 @@ REMEMBER:
     except Exception as e:
         st.warning(f"Error identifying relevant files: {str(e)}")
 
-def top_value_metrics(series: pd.Series):
-    vc = series.astype(str).value_counts()
-    total = vc.sum()
-
-    top_val = vc.index[0]
-    top_share = round((vc.iloc[0] / total) * 100, 2)
-    low_val = vc.index[-1]
-    return top_val, top_share, low_val, total
-
-def validate_api_key(api_key: str) -> bool:
-    """Validate Gemini API key by attempting to configure it"""
-    if not api_key or len(api_key.strip()) == 0:
-        return False
-    try:
-        genai.configure(api_key=api_key.strip())
-        list(genai.list_models())
-        return True
-    except Exception as e:
-        st.error(f"Invalid API key: {str(e)}")
-    return False
-
 def get_dataset(dataset_name: str) -> pd.DataFrame:
     if not dataset_name:
         raise ValueError("No dataset selected")
@@ -652,27 +505,6 @@ def get_dataset(dataset_name: str) -> pd.DataFrame:
         return data  # Backward compatibility
 
     raise ValueError(f"Dataset {dataset_name} not found")
-
-def initialize_duckdb_from_datasets():
-    """Initialize DuckDB connection and load all active datasets as tables"""
-    import duckdb
-    
-    conn = duckdb.connect(database=':memory:')
-    
-    if not st.session_state.get("active_datasets"):
-        raise Exception("No datasets available")
-    
-    for dataset_name, data in st.session_state.active_datasets.items():
-        df = data['dataframe'] if isinstance(data, dict) else data
-        
-        # Sanitize table name
-        table_name = dataset_name.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
-        table_name = ''.join(c for c in table_name if c.isalnum() or c == '_')
-        
-        # Register DataFrame as DuckDB table
-        conn.register(table_name, df)
-    
-    return conn
 
 def get_duckdb_tables(conn):
     """Get list of all tables in DuckDB connection"""
@@ -922,7 +754,7 @@ def generate_strict_sql_from_plan(single_query_plan: dict, schema_info: dict, ap
     TRY_STRPTIME(col, format2)
     )
     10. If safe parsing is not possible, **avoid using the column** and still return a valid query.
-
+    
     **GOAL:**
     Generate DuckDB SQL that **never crashes**, even with dirty, mixed-type, or unexpected values.
 
@@ -937,6 +769,7 @@ def generate_strict_sql_from_plan(single_query_plan: dict, schema_info: dict, ap
         )
     )
     sql_query = response.text.strip()
+    print(sql_query)
     if "```sql" in sql_query:
         sql_query = sql_query.split("```sql")[1].split("```")[0].strip()
     elif "```" in sql_query:
@@ -1199,7 +1032,6 @@ def generate_final_explanation(question: str, query_results: dict, multi_plan: d
             temperature=0.2
         )
     )
-    print(response.text.strip())
     return response.text.strip()
 
 def df_to_gemini_payload(df, max_rows=200):
@@ -1446,14 +1278,7 @@ def create_pdf_report(user_question, explanation, result_df, ai_plot_response=No
     buffer.seek(0)
     return buffer
 
-def create_markdown_pdf_report(user_query, markdown_response):
-    """
-    Generate a robust PDF report from markdown response with proper handling of:
-    - Markdown formatting (**, ###, ##, #)
-    - HTML tables with color coding
-    - Bullet points and lists
-    - Error recovery and fallback mechanisms
-    """
+def create_markdown_pdf_report(user_query, markdown_response, citations=None):
     
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -1837,6 +1662,29 @@ def create_markdown_pdf_report(user_query, markdown_response):
                     story.append(Spacer(1, 0.15*inch))
         
         # Build PDF
+        # Add citations section if provided
+        if citations and len(citations) > 0:
+            story.append(safe_paragraph("<b>Sources & Citations</b>", heading1_style))
+            story.append(Spacer(1, 0.10*inch))
+            
+            for idx, citation in enumerate(citations, 1):
+                # Citation number
+                story.append(safe_paragraph(f"<b>[{idx}]</b>", heading3_style))
+                
+                # Citation title
+                story.append(safe_paragraph(citation.get('title', 'Untitled'), normal_style))
+                
+                # Citation URL
+                url = citation.get('uri', '')
+                story.append(safe_paragraph(f"<font color='#1f77b4'>{url}</font>", normal_style))
+                
+                # Citation snippet
+                if citation.get('snippet'):
+                    story.append(safe_paragraph(f"<i>{citation['snippet']}</i>", bullet_style))
+                
+                story.append(Spacer(1, 0.07*inch))
+        
+        # Build PDF
         doc.build(story)
         
     except Exception as e:
@@ -1857,3 +1705,251 @@ def create_markdown_pdf_report(user_query, markdown_response):
     
     buffer.seek(0)
     return buffer
+
+def perform_web_search(query: str, api_key: str, max_retries: int = 3) -> dict:
+    """
+    Perform highly accurate web search using Google Gemini with search grounding.
+    
+    Args:
+        query: Search query string
+        api_key: Google API key
+        max_retries: Number of retry attempts for failed requests
+    
+    Returns:
+        dict with success, error, text, citations, and metadata
+    """
+    import requests
+    import time
+    from datetime import datetime
+    
+    try:
+        # Validate inputs
+        if not query or not query.strip():
+            return {
+                "success": False,
+                "error": "Query cannot be empty",
+                "text": "",
+                "citations": [],
+                "metadata": {}
+            }
+        
+        if not api_key or not api_key.strip():
+            return {
+                "success": False,
+                "error": "API key is required",
+                "text": "",
+                "citations": [],
+                "metadata": {}
+            }
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={api_key}"
+        
+        # Enhanced search query focused on top sources
+        search_query = f"""Conduct a focused web search using ONLY the top 5 most authoritative and relevant sources about: {query}
+
+        CRITICAL REQUIREMENTS:
+        1. Use ONLY the 5 most credible, recent, and directly relevant sources
+        2. Prioritize: official sources, peer-reviewed publications, authoritative news outlets, government data, industry leaders
+        3. Cross-reference key facts across these top sources
+        4. Include specific dates, numbers, and data points with source attribution
+        5. Note any conflicts between sources
+        6. Synthesize information efficiently - focus on signal, not noise
+
+        STRUCTURE YOUR RESPONSE:
+        • Executive Summary: 2-3 sentences of key verified findings
+        • Core Facts: Most important verified data points with dates and sources
+        • Key Insights: Critical trends or developments supported by evidence
+        • Main Players: Leading organizations/entities (if relevant)
+        • Notable Challenges: Verified issues or concerns
+        • Latest Developments: Most recent updates (with specific dates)
+        • Source Quality: Brief note on the authority/credibility of sources used
+
+        ACCURACY STANDARDS:
+        - Every major claim must reference its source
+        - Include specific dates for time-sensitive information
+        - Use exact numbers with context and units
+        - Explicitly state "according to [source]..." for attribution
+        - Note information recency (e.g., "as of January 2025...")
+        - Focus on the most important, actionable information"""
+        
+        payload = {
+            "contents": [{
+                "parts": [{"text": search_query}]
+            }],
+            "tools": [{
+                "google_search": {}
+            }],
+            "generationConfig": {
+                "temperature": 0.1,  # Lower temperature for more factual responses
+                "topP": 0.8,
+                "topK": 20,
+                "maxOutputTokens": 8192,
+                "candidateCount": 1
+            }
+        }
+        
+        # Retry logic for robustness
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    url, 
+                    json=payload,
+                    timeout=30,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code == 200:
+                    break
+                elif response.status_code == 429:  # Rate limit
+                    if attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) * 2  # Exponential backoff
+                        time.sleep(wait_time)
+                        continue
+                    last_error = f"Rate limit exceeded after {max_retries} attempts"
+                elif response.status_code >= 500:  # Server error
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+                        continue
+                    last_error = f"Server error: {response.status_code}"
+                else:
+                    last_error = f"API error {response.status_code}: {response.text}"
+                    break
+                    
+            except requests.exceptions.Timeout:
+                if attempt < max_retries - 1:
+                    continue
+                last_error = "Request timeout after multiple attempts"
+            except requests.exceptions.RequestException as e:
+                last_error = f"Request failed: {str(e)}"
+                break
+        
+        if response.status_code != 200 or last_error:
+            return {
+                "success": False,
+                "error": last_error or f"Unknown error (status: {response.status_code})",
+                "text": "",
+                "citations": [],
+                "metadata": {"attempts": attempt + 1}
+            }
+        
+        data = response.json()
+        
+        # Enhanced extraction with validation
+        result_text = ""
+        citations = []
+        search_queries_used = []
+        grounding_support_score = 0.0
+        
+        if "candidates" in data and len(data["candidates"]) > 0:
+            candidate = data["candidates"][0]
+            
+            # Extract text content with validation
+            if "content" in candidate and "parts" in candidate["content"]:
+                text_parts = []
+                for part in candidate["content"]["parts"]:
+                    if "text" in part and part["text"].strip():
+                        text_parts.append(part["text"].strip())
+                result_text = "\n\n".join(text_parts)
+            
+            # Extract comprehensive grounding metadata
+            if "groundingMetadata" in candidate:
+                grounding = candidate["groundingMetadata"]
+                
+                # Get grounding support score (confidence measure)
+                if "groundingSupport" in grounding:
+                    support = grounding["groundingSupport"]
+                    if isinstance(support, (int, float)):
+                        grounding_support_score = float(support)
+                
+                # Extract search queries that were executed
+                if "searchQueries" in grounding:
+                    search_queries_used = grounding["searchQueries"]
+                
+                # Extract top 5 most relevant grounding chunks (citations)
+                seen_uris = set()
+                if "groundingChunks" in grounding:
+                    for chunk in grounding["groundingChunks"]:
+                        # Stop after collecting 5 unique sources
+                        if len(citations) >= 5:
+                            break
+                            
+                        if "web" in chunk:
+                            web_info = chunk["web"]
+                            uri = web_info.get("uri", "")
+                            
+                            # Deduplicate by URI
+                            if uri and uri not in seen_uris:
+                                seen_uris.add(uri)
+                                
+                                citation = {
+                                    "title": web_info.get("title", "Untitled").strip(),
+                                    "uri": uri,
+                                    "snippet": web_info.get("snippet", "")[:300].strip()
+                                }
+                                
+                                # Extract domain for credibility assessment
+                                try:
+                                    from urllib.parse import urlparse
+                                    domain = urlparse(uri).netloc
+                                    citation["domain"] = domain
+                                except:
+                                    citation["domain"] = "unknown"
+                                
+                                citations.append(citation)
+                
+                # Sort citations by relevance (if available) or keep order
+                if "groundingSupports" in grounding:
+                    # Citations are already in relevance order from API
+                    pass
+        
+        # Validate results
+        if not result_text and not citations:
+            return {
+                "success": False,
+                "error": "No search results or citations found. Query may be too specific or no recent information available.",
+                "text": "",
+                "citations": [],
+                "metadata": {
+                    "attempts": attempt + 1,
+                    "search_queries_used": search_queries_used
+                }
+            }
+        
+        # Quality scoring
+        quality_score = 0.0
+        if result_text:
+            quality_score += 0.4
+        if citations:
+            quality_score += 0.3 * min(len(citations) / 5, 1.0)  # Up to 5 citations
+        if grounding_support_score > 0:
+            quality_score += 0.3 * grounding_support_score
+        
+        return {
+            "success": True,
+            "error": None,
+            "text": result_text,
+            "citations": citations,
+            "metadata": {
+                "query": query,
+                "timestamp": datetime.now().isoformat(),
+                "citation_count": len(citations),
+                "grounding_support_score": grounding_support_score,
+                "quality_score": round(quality_score, 2),
+                "search_queries_used": search_queries_used,
+                "attempts": attempt + 1
+            }
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": f"Unexpected error: {str(e)}",
+            "text": "",
+            "citations": [],
+            "metadata": {
+                "traceback": traceback.format_exc(),
+                "error_type": type(e).__name__
+            }
+        }
