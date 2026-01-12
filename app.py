@@ -12,7 +12,7 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-from utils import create_markdown_pdf_report,create_multi_query_plan, generate_strict_sql_from_plan, fix_sql_syntax_only, execute_multi_query_plan, execute_single_query_with_retry, generate_final_explanation, has_datasets, create_pdf_report, check_password,  extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables
+from utils import create_markdown_pdf_report,create_multi_query_plan, generate_strict_sql_from_plan, fix_sql_syntax_only, execute_multi_query_plan, execute_single_query_with_retry, generate_final_explanation, has_datasets, create_pdf_report, extract_duckdb_schema, load_registered_datasets, upload_to_supabase, read_uploaded_file, make_json_safe, clean_dataframe, extract_schema, register_dataset, load_registered_datasets, delete_dataset, identify_relevant_files, top_value_metrics, validate_api_key, get_dataset, SUPABASE_BUCKET, get_schema_info, load_csv, AVAILABLE_FIELDS, initialize_duckdb_from_datasets, get_duckdb_tables
 load_dotenv()
 
 st.set_page_config(
@@ -24,9 +24,6 @@ def load_css(file_name: str):
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 load_css("styles.css")
-
-if not check_password():
-    st.stop()
 
 if 'datasets_loaded' not in st.session_state:
     st.session_state.datasets_loaded = False

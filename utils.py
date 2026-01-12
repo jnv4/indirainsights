@@ -623,35 +623,6 @@ def delete_dataset(dataset_name: str):
     if dataset_name in st.session_state.active_datasets:
         st.session_state.active_datasets.pop(dataset_name)
 
-def check_password():
-    """Returns `True` if the user had the correct password."""
-    
-    def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        if (st.session_state["username"] == "indiraivf" and 
-            st.session_state["password"] == "indira@"):
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-            del st.session_state["username"]
-        else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        st.markdown("## 🔐 Login to Marketing Insights Dashboard")
-        st.text_input("Username", key="username")
-        st.text_input("Password", type="password", key="password")
-        st.button("Login", on_click=password_entered)
-        return False
-    elif not st.session_state["password_correct"]:
-        st.markdown("## 🔐 Login to Marketing Insights Dashboard")
-        st.text_input("Username", key="username")
-        st.text_input("Password", type="password", key="password")
-        st.button("Login", on_click=password_entered)
-        st.error("😕 User not known or password incorrect")
-        return False
-    else:
-        return True
-
 def identify_relevant_files(user_query: str, api_key: str) -> list:
     try:
         genai.configure(api_key=api_key)
