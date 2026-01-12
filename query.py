@@ -18,7 +18,6 @@ import openpyxl
 from dotenv import load_dotenv
 from supabase import create_client, Client
 import google.generativeai as genai
-import pyodbc
 import pymssql
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter

@@ -7,7 +7,6 @@ openpyxl
 python-dotenv
 supabase
 google-generativeai
-pyodbc
 reportlab
 markdown
 beautifulsoup4
