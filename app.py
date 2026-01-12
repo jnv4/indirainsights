@@ -39,9 +39,6 @@ def load_css(file_name: str):
 
 load_css("styles.css")
 
-if not check_password():
-    st.stop()
-
 # Default tables to select (case-insensitive matching)
 DEFAULT_TABLES = [
     "IIVF_Master_Clinics",
