@@ -12,31 +12,21 @@ from datetime import datetime
 import openpyxl
 import math
 import numpy as np
-from utils import (
-    perform_web_search,
-    create_markdown_pdf_report,
-    create_multi_query_plan,
-    generate_strict_sql_from_plan,
-    fix_sql_syntax_only,
-    execute_multi_query_plan,
-    execute_single_query_with_retry,
-    generate_final_explanation,
+from database import (
     has_datasets,
-    create_pdf_report,
     check_password,
-    extract_duckdb_schema,
     make_json_safe,
     clean_dataframe,
     extract_schema,
-    identify_relevant_files,
     get_dataset,
     get_schema_info_from_azure,
     initialize_duckdb_from_azure_datasets,
-    get_duckdb_tables,
     get_all_azure_tables,
     load_selected_azure_tables
 )
-
+from ai_utils import identify_relevant_files, generate_final_explanation, df_to_gemini_payload, generate_ai_plot_from_result
+from  query import get_duckdb_tables, extract_duckdb_schema, create_multi_query_plan, generate_strict_sql_from_plan, fix_sql_syntax_only, execute_multi_query_plan, execute_single_query_with_retry
+from utils import create_markdown_pdf_report, create_pdf_report, perform_web_search
 load_dotenv()
 
 st.set_page_config(
@@ -76,7 +66,7 @@ if 'tables_fetched' not in st.session_state:
 # Fetch available tables only once
 if not st.session_state.tables_fetched:
     with st.spinner("Fetching available tables from Azure SQL..."):
-        from utils import get_all_azure_tables
+        from database import get_all_azure_tables
         try:
             st.session_state.available_tables = get_all_azure_tables()
             
@@ -671,7 +661,6 @@ with tab3:
                         st.session_state.tab4_primary_result = list(non_empty_results.values())[0]
                         
                         if show_visuals:
-                            from utils import generate_ai_plot_from_result
                             
                             st.info("📊 Generating visualizations...")
                             ai_plot_response = generate_ai_plot_from_result(
