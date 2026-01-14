@@ -1502,15 +1502,257 @@ from bs4 import BeautifulSoup
 import re
 from html import escape
 
+def perform_web_search(query: str, api_key: str, max_retries: int = 3) -> dict:
+    """
+    Perform highly accurate web search using Google Gemini with search grounding.
+    
+    Args:
+        query: Search query string
+        api_key: Google API key
+        max_retries: Number of retry attempts for failed requests
+    
+    Returns:
+        dict with success, error, text, citations, and metadata
+    """
+    import requests
+    import time
+    from datetime import datetime
+    
+    try:
+        # Validate inputs
+        if not query or not query.strip():
+            return {
+                "success": False,
+                "error": "Query cannot be empty",
+                "text": "",
+                "citations": [],
+                "metadata": {}
+            }
+        
+        if not api_key or not api_key.strip():
+            return {
+                "success": False,
+                "error": "API key is required",
+                "text": "",
+                "citations": [],
+                "metadata": {}
+            }
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={api_key}"
+        
+        # Enhanced search query focused on top sources
+        search_query = f"""Conduct a focused web search using ONLY the top 5 most authoritative and relevant sources about: {query}
 
-def create_markdown_pdf_report(user_query, markdown_response):
-    """
-    Generate a robust PDF report from markdown response with proper handling of:
-    - Markdown formatting (**, ###, ##, #)
-    - HTML tables with color coding
-    - Bullet points and lists
-    - Error recovery and fallback mechanisms
-    """
+        CRITICAL REQUIREMENTS:
+        1. Use ONLY the 5 most credible, recent, and directly relevant sources
+        2. Prioritize: official sources, peer-reviewed publications, authoritative news outlets, government data, industry leaders
+        3. Cross-reference key facts across these top sources
+        4. Include specific dates, numbers, and data points with source attribution
+        5. Note any conflicts between sources
+        6. Synthesize information efficiently - focus on signal, not noise
+
+        STRUCTURE YOUR RESPONSE:
+        • Executive Summary: 2-3 sentences of key verified findings
+        • Core Facts: Most important verified data points with dates and sources
+        • Key Insights: Critical trends or developments supported by evidence
+        • Main Players: Leading organizations/entities (if relevant)
+        • Notable Challenges: Verified issues or concerns
+        • Latest Developments: Most recent updates (with specific dates)
+        • Source Quality: Brief note on the authority/credibility of sources used
+
+        ACCURACY STANDARDS:
+        - Every major claim must reference its source
+        - Include specific dates for time-sensitive information
+        - Use exact numbers with context and units
+        - Explicitly state "according to [source]..." for attribution
+        - Note information recency (e.g., "as of January 2025...")
+        - Focus on the most important, actionable information"""
+        
+        payload = {
+            "contents": [{
+                "parts": [{"text": search_query}]
+            }],
+            "tools": [{
+                "google_search": {}
+            }],
+            "generationConfig": {
+                "temperature": 0.1,  # Lower temperature for more factual responses
+                "topP": 0.8,
+                "topK": 20,
+                "maxOutputTokens": 8192,
+                "candidateCount": 1
+            }
+        }
+        
+        # Retry logic for robustness
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    url, 
+                    json=payload,
+                    timeout=30,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code == 200:
+                    break
+                elif response.status_code == 429:  # Rate limit
+                    if attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) * 2  # Exponential backoff
+                        time.sleep(wait_time)
+                        continue
+                    last_error = f"Rate limit exceeded after {max_retries} attempts"
+                elif response.status_code >= 500:  # Server error
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+                        continue
+                    last_error = f"Server error: {response.status_code}"
+                else:
+                    last_error = f"API error {response.status_code}: {response.text}"
+                    break
+                    
+            except requests.exceptions.Timeout:
+                if attempt < max_retries - 1:
+                    continue
+                last_error = "Request timeout after multiple attempts"
+            except requests.exceptions.RequestException as e:
+                last_error = f"Request failed: {str(e)}"
+                break
+        
+        if response.status_code != 200 or last_error:
+            return {
+                "success": False,
+                "error": last_error or f"Unknown error (status: {response.status_code})",
+                "text": "",
+                "citations": [],
+                "metadata": {"attempts": attempt + 1}
+            }
+        
+        data = response.json()
+        
+        # Enhanced extraction with validation
+        result_text = ""
+        citations = []
+        search_queries_used = []
+        grounding_support_score = 0.0
+        
+        if "candidates" in data and len(data["candidates"]) > 0:
+            candidate = data["candidates"][0]
+            
+            # Extract text content with validation
+            if "content" in candidate and "parts" in candidate["content"]:
+                text_parts = []
+                for part in candidate["content"]["parts"]:
+                    if "text" in part and part["text"].strip():
+                        text_parts.append(part["text"].strip())
+                result_text = "\n\n".join(text_parts)
+            
+            # Extract comprehensive grounding metadata
+            if "groundingMetadata" in candidate:
+                grounding = candidate["groundingMetadata"]
+                
+                # Get grounding support score (confidence measure)
+                if "groundingSupport" in grounding:
+                    support = grounding["groundingSupport"]
+                    if isinstance(support, (int, float)):
+                        grounding_support_score = float(support)
+                
+                # Extract search queries that were executed
+                if "searchQueries" in grounding:
+                    search_queries_used = grounding["searchQueries"]
+                
+                # Extract top 5 most relevant grounding chunks (citations)
+                seen_uris = set()
+                if "groundingChunks" in grounding:
+                    for chunk in grounding["groundingChunks"]:
+                        # Stop after collecting 5 unique sources
+                        if len(citations) >= 5:
+                            break
+                            
+                        if "web" in chunk:
+                            web_info = chunk["web"]
+                            uri = web_info.get("uri", "")
+                            
+                            # Deduplicate by URI
+                            if uri and uri not in seen_uris:
+                                seen_uris.add(uri)
+                                
+                                citation = {
+                                    "title": web_info.get("title", "Untitled").strip(),
+                                    "uri": uri,
+                                    "snippet": web_info.get("snippet", "")[:300].strip()
+                                }
+                                
+                                # Extract domain for credibility assessment
+                                try:
+                                    from urllib.parse import urlparse
+                                    domain = urlparse(uri).netloc
+                                    citation["domain"] = domain
+                                except:
+                                    citation["domain"] = "unknown"
+                                
+                                citations.append(citation)
+                
+                # Sort citations by relevance (if available) or keep order
+                if "groundingSupports" in grounding:
+                    # Citations are already in relevance order from API
+                    pass
+        
+        # Validate results
+        if not result_text and not citations:
+            return {
+                "success": False,
+                "error": "No search results or citations found. Query may be too specific or no recent information available.",
+                "text": "",
+                "citations": [],
+                "metadata": {
+                    "attempts": attempt + 1,
+                    "search_queries_used": search_queries_used
+                }
+            }
+        
+        # Quality scoring
+        quality_score = 0.0
+        if result_text:
+            quality_score += 0.4
+        if citations:
+            quality_score += 0.3 * min(len(citations) / 5, 1.0)  # Up to 5 citations
+        if grounding_support_score > 0:
+            quality_score += 0.3 * grounding_support_score
+        
+        return {
+            "success": True,
+            "error": None,
+            "text": result_text,
+            "citations": citations,
+            "metadata": {
+                "query": query,
+                "timestamp": datetime.now().isoformat(),
+                "citation_count": len(citations),
+                "grounding_support_score": grounding_support_score,
+                "quality_score": round(quality_score, 2),
+                "search_queries_used": search_queries_used,
+                "attempts": attempt + 1
+            }
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": f"Unexpected error: {str(e)}",
+            "text": "",
+            "citations": [],
+            "metadata": {
+                "traceback": traceback.format_exc(),
+                "error_type": type(e).__name__
+            }
+        }
+
+
+
+def create_markdown_pdf_report(user_query, markdown_response, citations=None):
     
     buffer = BytesIO()
     doc = SimpleDocTemplate(
@@ -1892,6 +2134,29 @@ def create_markdown_pdf_report(user_query, markdown_response):
                     story.append(Spacer(1, 0.1*inch))
                     story.append(table)
                     story.append(Spacer(1, 0.15*inch))
+        
+        # Build PDF
+        # Add citations section if provided
+        if citations and len(citations) > 0:
+            story.append(safe_paragraph("<b>Sources & Citations</b>", heading1_style))
+            story.append(Spacer(1, 0.10*inch))
+            
+            for idx, citation in enumerate(citations, 1):
+                # Citation number
+                story.append(safe_paragraph(f"<b>[{idx}]</b>", heading3_style))
+                
+                # Citation title
+                story.append(safe_paragraph(citation.get('title', 'Untitled'), normal_style))
+                
+                # Citation URL
+                url = citation.get('uri', '')
+                story.append(safe_paragraph(f"<font color='#1f77b4'>{url}</font>", normal_style))
+                
+                # Citation snippet
+                if citation.get('snippet'):
+                    story.append(safe_paragraph(f"<i>{citation['snippet']}</i>", bullet_style))
+                
+                story.append(Spacer(1, 0.07*inch))
         
         # Build PDF
         doc.build(story)

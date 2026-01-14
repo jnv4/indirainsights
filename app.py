@@ -155,10 +155,15 @@ with tab1:
 with tab2:
     st.markdown("## 🤖 Sales & Market Intelligence Report Bot")
 
+    # Initialize session state variables
     if 'tab2_response' not in st.session_state:
         st.session_state.tab2_response = None
     if 'tab2_query' not in st.session_state:
         st.session_state.tab2_query = None
+    if 'tab2_citations' not in st.session_state:
+        st.session_state.tab2_citations = []
+    if 'tab2_data_source' not in st.session_state:
+        st.session_state.tab2_data_source = "internal"
 
     if not has_datasets():
         st.warning("🔭 No datasets available")
@@ -174,136 +179,319 @@ with tab2:
         if st.session_state.api_key_configured:
             from prompts import SYSTEM_PROMPT
             
-            user_query = st.text_area("Your Question", height=120, label_visibility="visible", key="tab2_query_input")
-            analyze_btn = st.button("🔍 Analyze", type="primary", key="tab2_analyze_btn")
+            # Question input
+            user_query = st.text_area(
+                "Your Question", 
+                height=120, 
+                label_visibility="visible", 
+                key="tab2_query_input",
+                placeholder="E.g., What are the latest trends in IVF marketing? Or analyze our Q4 performance."
+            )
             
+            # Data source radio buttons
+            st.markdown("### 📊 Select Data Source")
+            data_source = st.radio(
+                "Choose where to get information from:",
+                options=["internal", "web_search", "both"],
+                format_func=lambda x: {
+                    "internal": "📊 Internal Data Only - Use only our uploaded data",
+                    "web_search": "🌐 Web Search Only - Search the internet for current information", 
+                    "both": "🔄 Both - Combine internal data with web research"
+                }[x],
+                key="tab2_data_source_radio",
+                horizontal=False
+            )
+            
+            # Action buttons
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                analyze_btn = st.button("🔍 Analyze", type="primary", key="tab2_analyze_btn", use_container_width=True)
+    
             if analyze_btn and user_query:
                 st.session_state.active_tab = 1
                 st.session_state.tab2_query = user_query
                 st.session_state.tab2_response = None
+                st.session_state.tab2_citations = []
+                st.session_state.tab2_data_source = data_source
+                
                 try:
-                    relevant_files = identify_relevant_files(user_query, st.session_state.gemini_api_key)
-
-
-                    relevant_data = {}
-                    for file_name in relevant_files:
-                        with st.spinner(f"Loading {file_name}..."):
-                            try:
-                                relevant_data[file_name] = get_dataset(file_name)
-                            except Exception as e:
-                                st.warning(f"Could not load {file_name}: {str(e)}")
-                        
                     data_context = ""
+                    web_search_results = None
+                    
+                    # ========== HANDLE INTERNAL DATA ==========
+                    if data_source in ["internal", "both"]:
+                        with st.spinner("📊 Loading internal data..."):
+                            # Get all available tables
+                            all_tables = list(st.session_state.active_datasets.keys())
+                            
+                            # Identify relevant tables using AI
+                            relevant_files = identify_relevant_files(user_query, st.session_state.gemini_api_key)
+                            
+                            # Filter to only existing tables
+                            relevant_files = [t for t in relevant_files if t in all_tables]
+                            if not relevant_files:
+                                relevant_files = all_tables
+                            
+                            st.info(f"📂 Using {len(relevant_files)} relevant tables: {', '.join(relevant_files)}")
+                            
+                            relevant_data = {}
+                            for file_name in relevant_files:
+                                try:
+                                    relevant_data[file_name] = get_dataset(file_name)
+                                except Exception as e:
+                                    st.warning(f"Could not load {file_name}: {str(e)}")
+                            
+                            # Build data context
+                            for name, data in relevant_data.items():
+                                df = data['dataframe'] if isinstance(data, dict) else data
+                                table_name = name.lower().replace(" ", "_").replace("-", "_")
 
-                    for name, data in relevant_data.items():
-                        df = data['dataframe'] if isinstance(data, dict) else data
-                        table_name = name.lower().replace(" ", "_").replace("-", "_")
+                                data_context += f"\n\n### Dataset: {name}\n"
+                                data_context += f"Table name: {table_name}\n"
+                                data_context += f"Total rows: {len(df)}\n"
+                                data_context += f"Columns ({len(df.columns)}): {', '.join(df.columns)}\n"
 
-                        data_context += f"\n\n### Dataset: {name}\n"
-                        data_context += f"Table name: {table_name}\n"
-                        data_context += f"Total rows: {len(df)}\n"
-                        data_context += f"Columns ({len(df.columns)}): {', '.join(df.columns)}\n"
-
-                            # ---------- Numeric summary ----------
-                        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-                        if numeric_cols:
-                            numeric_summary = (
-                                df[numeric_cols]
-                                .agg(["min", "max", "mean", "median", "std"])
-                                .round(2)
-                                .to_dict()
-                            )
-
-                            data_context += "\nNumeric column summary (distribution-level):\n"
-                            for col, stats in numeric_summary.items():
-                                data_context += (
-                                        f"- {col}: min={stats['min']}, "
-                                        f"max={stats['max']}, "
-                                        f"mean={stats['mean']}, "
-                                        f"median={stats['median']}, "
-                                        f"std={stats['std']}\n"
+                                # Numeric summary
+                                numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+                                if numeric_cols:
+                                    numeric_summary = (
+                                        df[numeric_cols]
+                                        .agg(["min", "max", "mean", "median", "std"])
+                                        .round(2)
+                                        .to_dict()
                                     )
 
-                            # ---------- Categorical dominance ----------
-                        categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
-                        if categorical_cols:
-                            data_context += "\nCategorical dominance (top 3 values):\n"
-                            for col in categorical_cols[:4]:  # cap to avoid noise
-                                vc = df[col].value_counts(normalize=True).head(3)
-                                dominance = {k: round(v * 100, 2) for k, v in vc.items()}
-                                data_context += f"- {col}: {dominance}\n"
+                                    data_context += "\nNumeric column summary (distribution-level):\n"
+                                    for col, stats in numeric_summary.items():
+                                        data_context += (
+                                            f"- {col}: min={stats['min']}, "
+                                            f"max={stats['max']}, "
+                                            f"mean={stats['mean']}, "
+                                            f"median={stats['median']}, "
+                                            f"std={stats['std']}\n"
+                                        )
 
-                            # ---------- Skew / imbalance signal ----------
-                        if numeric_cols:
-                            skew_info = {
-                                col: round(df[col].skew(), 2)
-                                for col in numeric_cols
-                                if df[col].nunique() > 5
-                            }
-                            if skew_info:
-                                data_context += "\nDistribution skew indicators:\n"
-                                for col, skew in skew_info.items():
-                                    data_context += f"- {col}: skew={skew}\n"
-                            # ---------- Missing data ---------
-                        missing = (
-                            df.isna().mean()
-                            .mul(100)
-                            .round(2)
-                            .to_dict()
-                        )
-                        significant_missing = {k: v for k, v in missing.items() if v > 5}
-                        if significant_missing:
-                            data_context += "\nMissing data (>5%):\n"
-                            for col, pct in significant_missing.items():
-                                data_context += f"- {col}: {pct}% missing\n"
-                
-                    with st.spinner("🤔 Generating insights..."):
-                        full_prompt = f"""{SYSTEM_PROMPT}
-                            **Your answer should be VERY detailed**
-                            Always consider cultural, regional, demographic, socio-economic, and platform-specific factors when analyzing IVF-related data, insights, or strategies. Additionally, factor in all relevant marketing dimensions, including audience segmentation, messaging sensitivity, channel effectiveness, regional ad behavior, conversion funnels, trust signals, compliance constraints, and competitive positioning.
+                                # Categorical dominance
+                                categorical_cols = df.select_dtypes(include=["object"]).columns.tolist()
+                                if categorical_cols:
+                                    data_context += "\nCategorical dominance (top 3 values):\n"
+                                    for col in categorical_cols[:4]:
+                                        vc = df[col].value_counts(normalize=True).head(3)
+                                        dominance = {k: round(v * 100, 2) for k, v in vc.items()}
+                                        data_context += f"- {col}: {dominance}\n"
 
-                            Deliver a detailed, region-wise comparative analysis covering both cultural context and marketing performance, with clear rationale, trade-offs, and actionable implications. No shortcuts, no surface-level summaries—depth, rigor, and completeness are mandatory.
-                                    DATA AVAILABLE:
-                                    {data_context}
-                                    USER QUESTION: {user_query}
-                            Always colour code **numerical** values full cells in tables.
-                            When returning tables:
-                            - Use HTML tables only (DO NOT use markdown tables (STRICTLY HTML))
-                            - Apply color coding using HEX colors ONLY
-                            - Use ONLY the following palette:
-                            Positive / Outperforming: #34d399
-                            Competitive / Needs optimization: #fbbf24
-                            Underperforming: #f87171
-                            Benchmark / Reference: #93c5fd
-                            - Do not invent new colors
-                            - Do not explain colors outside the table
-
-
-                            """
-                        genai.configure(api_key=st.session_state.gemini_api_key)
+                                # Skew info
+                                if numeric_cols:
+                                    skew_info = {
+                                        col: round(df[col].skew(), 2)
+                                        for col in numeric_cols
+                                        if df[col].nunique() > 5
+                                    }
+                                    if skew_info:
+                                        data_context += "\nDistribution skew indicators:\n"
+                                        for col, skew in skew_info.items():
+                                            data_context += f"- {col}: skew={skew}\n"
+                                
+                                # Missing data
+                                missing = (
+                                    df.isna().mean()
+                                    .mul(100)
+                                    .round(2)
+                                    .to_dict()
+                                )
+                                significant_missing = {k: v for k, v in missing.items() if v > 5}
+                                if significant_missing:
+                                    data_context += "\nMissing data (>5%):\n"
+                                    for col, pct in significant_missing.items():
+                                        data_context += f"- {col}: {pct}% missing\n"
+                    
+                    # ========== HANDLE WEB SEARCH ==========
+                    if data_source in ["web_search", "both"]:
+                        with st.spinner("🌐 Searching the web..."):
+                            from utils import perform_web_search
+                            web_search_results = perform_web_search(user_query, st.session_state.gemini_api_key)
                             
-                        model = genai.GenerativeModel('gemini-2.5-pro')
-                        
-                        response = model.generate_content(full_prompt)
+                            if web_search_results["success"]:
+                                st.session_state.tab2_citations = web_search_results["citations"]
+                                st.success(f"✅ Found {len(web_search_results['citations'])} web sources")
+                            else:
+                                st.error(f"❌ Web search failed: {web_search_results['error']}")
+                                with st.expander("🔍 Debug Info"):
+                                    st.code(web_search_results['error'])
+                    
+                    # ========== GENERATE FINAL RESPONSE ==========
+                    with st.spinner("🤔 Generating comprehensive insights..."):
+                        # Build the prompt
+                        full_prompt = f"""{SYSTEM_PROMPT}
 
+                        **Your answer should be VERY detailed**
+
+                        Always consider cultural, regional, demographic, socio-economic, and platform-specific factors when analyzing IVF-related data, insights, or strategies. Additionally, factor in all relevant marketing dimensions, including audience segmentation, messaging sensitivity, channel effectiveness, regional ad behavior, conversion funnels, trust signals, compliance constraints, and competitive positioning.
+
+                        Deliver a detailed, region-wise comparative analysis covering both cultural context and marketing performance, with clear rationale, trade-offs, and actionable implications. No shortcuts, no surface-level summaries—depth, rigor, and completeness are mandatory.
+                        """
+                        
+                        # Add internal data context
+                        if data_context:
+                            full_prompt += f"\n\n## INTERNAL DATA AVAILABLE:\n{data_context}"
+                        
+                        # Add web search results
+                        if web_search_results and web_search_results["success"]:
+                            full_prompt += f"\n\n## WEB SEARCH RESULTS:\n{web_search_results['text']}\n"
+                            
+                            if web_search_results['citations']:
+                                full_prompt += "\n### SOURCES:\n"
+                                for idx, citation in enumerate(web_search_results['citations'], 1):
+                                    full_prompt += f"[{idx}] {citation['title']}\n"
+                                    full_prompt += f"    URL: {citation['uri']}\n"
+                                    if citation.get('snippet'):
+                                        full_prompt += f"    Context: {citation['snippet']}\n"
+                                
+                                full_prompt += "\n**IMPORTANT**: Reference these sources in your response using [1], [2], etc. when citing web information.\n"
+                        
+                        # Add the user question
+                        full_prompt += f"\n\n## USER QUESTION:\n{user_query}\n"
+                        
+                        # Add formatting instructions
+                        full_prompt += """
+
+                        ## FORMATTING REQUIREMENTS:
+
+                        Always colour code **numerical** values full cells in tables.
+
+                        When returning tables:
+                        - Use HTML tables only (DO NOT use markdown tables - STRICTLY HTML)
+                        - Apply color coding using HEX colors ONLY
+                        - Use ONLY the following palette:
+                        * Positive / Outperforming: #34d399
+                        * Competitive / Needs optimization: #fbbf24
+                        * Underperforming: #f87171
+                        * Benchmark / Reference: #93c5fd
+                        - Do not invent new colors
+                        - Do not explain colors outside the table
+
+                        When using web search results:
+                        - Clearly indicate which insights come from web sources vs internal data
+                        - Use citation numbers [1], [2], etc. for web sources
+                        - Provide a balanced analysis combining both sources when available
+                        """
+                        
+                        # Generate response
+                        genai.configure(api_key=st.session_state.gemini_api_key)
+                        model = genai.GenerativeModel('gemini-3-pro-preview')
+                        response = model.generate_content(full_prompt)
+                        
                         st.session_state.tab2_response = response.text
                         
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
-                    st.info("If this is an API key error, please reconfigure your API key using the 'Change API Key' button above")
+                    import traceback
+                    with st.expander("🔍 Full Error Details"):
+                        st.code(traceback.format_exc())
             
+            # ========== DISPLAY RESULTS ==========
             if st.session_state.tab2_response:
+                st.markdown("---")
+                st.markdown("## 📊 Analysis Results")
+                
+                # Show data source indicator
+                source_icon = {
+                    "internal": "📊",
+                    "web_search": "🌐",
+                    "both": "🔄"
+                }
+                st.info(f"{source_icon.get(st.session_state.tab2_data_source, '📊')} Data Source: **{st.session_state.tab2_data_source.replace('_', ' ').title()}**")
+                
+                # Display the main response
                 st.markdown(st.session_state.tab2_response, unsafe_allow_html=True)
+                
+                # ========== DISPLAY CITATIONS ==========
+                if st.session_state.tab2_data_source in ["web_search", "both"] and st.session_state.tab2_citations:
+                    st.markdown("---")
+                    st.markdown("### 📚 Sources & Citations")
+                    
+                    st.markdown("""
+                    <style>
+                    .citation-box {
+                        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+                        border-left: 4px solid #1f77b4;
+                        padding: 16px;
+                        margin: 12px 0;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        transition: transform 0.2s;
+                    }
+                    .citation-box:hover {
+                        transform: translateX(5px);
+                        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+                    }
+                    .citation-number {
+                        display: inline-block;
+                        background: #1f77b4;
+                        color: white;
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 50%;
+                        text-align: center;
+                        line-height: 28px;
+                        font-weight: bold;
+                        margin-right: 10px;
+                    }
+                    .citation-title {
+                        font-weight: bold;
+                        color: #2c3e50;
+                        font-size: 1.05em;
+                        margin-bottom: 8px;
+                    }
+                    .citation-url {
+                        color: #1f77b4;
+                        font-size: 0.9em;
+                        word-break: break-all;
+                        text-decoration: none;
+                    }
+                    .citation-url:hover {
+                        text-decoration: underline;
+                    }
+                    .citation-snippet {
+                        color: #666;
+                        font-size: 0.9em;
+                        margin-top: 8px;
+                        font-style: italic;
+                        line-height: 1.4;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    for idx, citation in enumerate(st.session_state.tab2_citations, 1):
+                        snippet_html = ""
+                        if citation.get('snippet'):
+                            snippet_html = f'<div class="citation-snippet">"{citation["snippet"]}"</div>'
+                        
+                        st.markdown(f"""
+                        <div class="citation-box">
+                            <div>
+                                <span class="citation-number">{idx}</span>
+                                <span class="citation-title">{citation['title']}</span>
+                            </div>
+                            <div style="margin-left: 38px;">
+                                <a href="{citation['uri']}" target="_blank" class="citation-url">🔗 {citation['uri']}</a>
+                                {snippet_html}
+                            
+                        </div>
+                        """, unsafe_allow_html=True)
 
                 st.markdown('</div>', unsafe_allow_html=True)
 
-                # PDF Download Option
+                # ========== PDF DOWNLOAD ==========
                 st.markdown("---")
+                st.markdown("### 📥 Export Options")
+                
                 try:
                     with st.spinner("📄 Preparing PDF report..."):
                         pdf_buffer = create_markdown_pdf_report(
                             st.session_state.tab2_query,
-                            st.session_state.tab2_response
+                            st.session_state.tab2_response,
+                            st.session_state.tab2_citations
                         )
                         
                         if 'report_pdf_data' not in st.session_state:
@@ -312,16 +500,25 @@ with tab2:
                         st.session_state.report_pdf_data['buffer'] = pdf_buffer.getvalue()
                         st.session_state.report_pdf_data['filename'] = f"market_intelligence_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                     
-                    st.download_button(
-                        label="📄 Download PDF Report",
-                        data=st.session_state.report_pdf_data['buffer'],
-                        file_name=st.session_state.report_pdf_data['filename'],
-                        mime="application/pdf",
-                        type="secondary",
-                        use_container_width=True
-                    )
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.download_button(
+                            label="📄 Download PDF Report",
+                            data=st.session_state.report_pdf_data['buffer'],
+                            file_name=st.session_state.report_pdf_data['filename'],
+                            mime="application/pdf",
+                            type="secondary",
+                            use_container_width=True
+                        )
+                    with col2:
+                        if st.button("🔄 New Analysis", use_container_width=True):
+                            st.session_state.tab2_response = None
+                            st.session_state.tab2_citations = []
+                            st.rerun()
+                            
                 except Exception as pdf_error:
                     st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
+
 
 with tab3:
     st.markdown("## 📤 Upload Marketing Data")
@@ -501,9 +698,9 @@ with tab4:
                 st.session_state.duckdb_conn = None
             
             # Load data into DuckDB
-            with st.spinner("📊 Initializing DuckDB tables..."):
+            with st.spinner("📊 Initializing DuckDB tables from Files..."):
                 try:
-                    conn = initialize_duckdb_from_datasets()
+                    conn = initialize_duckdb_from_datasets()  # Changed function name
                     st.session_state.duckdb_conn = conn
                         
                 except Exception as e:
@@ -548,7 +745,7 @@ with tab4:
                             schema_info,
                             st.session_state.gemini_api_key
                         )
-                        
+                        print(execution_result)
                         successful_results = execution_result["success"]
                         failed_queries = execution_result["failed"]
                         
@@ -558,7 +755,7 @@ with tab4:
                         }
                         
                         if not non_empty_results:
-                            st.warning("No relevant data found. Try rephrasing your question.")
+                            st.error("No relevant data found. Try rephrasing your question.")
                             
                             if failed_queries:
                                 with st.expander("🔍 Debug Info (Optional)", expanded=False):
@@ -577,7 +774,6 @@ with tab4:
                         
                         if show_visuals:
                             from utils import generate_ai_plot_from_result
-                            
                             st.info("📊 Generating visualizations...")
                             ai_plot_response = generate_ai_plot_from_result(
                                 st.session_state.tab4_primary_result,
@@ -631,8 +827,7 @@ with tab4:
                         data=st.session_state.pdf_data['buffer'],
                         file_name=st.session_state.pdf_data['filename'],
                         mime="application/pdf",
-                        type="secondary",
-                        use_container_width=True
+                        type="secondary",width='stretch'
                     )
                 except Exception as pdf_error:
                     st.warning(f"⚠️ Could not generate PDF: {str(pdf_error)}")
